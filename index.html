@@ -1,0 +1,114 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin-when-cross-origin"><meta name="description" content="KinTrack — voluntary, consent-first location sharing and asset tracking."><title>KinTrack — Safety, on your terms</title><style>
+
+:root{
+  --bg:#f7f7f2;--paper:#ffffff;--ink:#18211f;--muted:#66716b;
+  --teal:#176b58;--blue:#dceee7;--warn:#fff0cc;--danger:#fde8e5;
+  --line:#e2e5dd;--lime:#d8f36a;--coral:#f06c4e;--shadow:0 18px 45px rgba(24,33,31,.07)
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,input,select{font:inherit}
+button{cursor:pointer;border:1px solid var(--teal);border-radius:999px;padding:11px 17px;font-weight:750;background:var(--teal);color:white;transition:transform .18s ease,box-shadow .18s ease,background .18s ease}
+button:hover{transform:translateY(-1px);box-shadow:0 7px 16px #176b5820}
+button.secondary{background:transparent;color:var(--ink);border-color:#cfd6ce}
+button.secondary:hover{background:#edf1e9}
+button.danger{background:#fff0ed;color:#a5372c;border-color:#f0c6bd}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+header{position:sticky;top:0;z-index:5;background:#f7f7f2ed;border-bottom:1px solid var(--line);backdrop-filter:blur(16px);padding:14px max(5vw,20px);display:flex;gap:12px;align-items:center;justify-content:space-between}
+.brand{display:flex;gap:11px;align-items:center;font-weight:900;font-size:18px;letter-spacing:-.04em}
+.logo{display:grid;place-items:center;width:42px;height:42px;border-radius:14px 14px 14px 4px;background:var(--lime);color:#233020;font-size:20px;font-weight:950}
+.small{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0}
+.wrap{max-width:1240px;margin:auto;padding:30px max(5vw,20px) 64px}
+.hero{position:relative;padding:34px 34px 32px;display:flex;justify-content:space-between;gap:24px;align-items:flex-end;flex-wrap:wrap;background:#e8f0e9;border-radius:28px 28px 6px 28px;overflow:hidden;margin-bottom:23px}
+.hero:after{content:"";position:absolute;width:240px;height:240px;border:1px solid #176b5828;border-radius:50%;right:15%;top:-155px;box-shadow:0 0 0 28px #176b5807,0 0 0 58px #176b5807;pointer-events:none}
+.hero>div{position:relative;z-index:1}
+.eyebrow{color:var(--teal);text-transform:uppercase;letter-spacing:.16em;font-size:10px;font-weight:900}
+h1{font-size:clamp(36px,5.7vw,68px);line-height:.99;margin:13px 0 17px;letter-spacing:-.075em;font-weight:850;max-width:690px}
+h1 span{color:var(--teal)!important}
+h2{font-size:18px;letter-spacing:-.035em;margin:0 0 12px;font-weight:800}
+p{color:var(--muted);margin:5px 0 14px}
+.pill{border:1px solid #d7ded5;border-radius:999px;padding:7px 12px;color:#3f5147;background:#fff9;font-size:11px;font-weight:700}
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:17px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:22px;padding:22px;min-width:0;box-shadow:0 3px 14px #18211f05}
+.card h2{display:flex;align-items:center;gap:8px}
+.span8{grid-column:span 8}.span4{grid-column:span 4}.span6{grid-column:span 6}.span12{grid-column:span 12}
+.statrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.stat{background:#f5f7f1;border:1px solid #e8ece3;padding:13px 11px;border-radius:15px}
+.stat strong{display:block;font-size:25px;line-height:1.15;letter-spacing:-.06em;color:var(--teal)}
+.stat small{color:var(--muted);font-size:10px;line-height:1.3;display:block;margin-top:5px}
+.map{height:340px;border-radius:17px;border:1px solid #dce4d9;position:relative;overflow:hidden;background:#edf3e9}.map:before,.map:after{display:none}
+.pin{position:absolute;left:52%;top:43%;z-index:1;background:var(--teal);color:#fff;padding:9px 13px;border-radius:13px 13px 13px 3px;font-weight:800;box-shadow:0 0 0 7px #176b581a}
+.mapnote{position:absolute;z-index:1;bottom:10px;left:10px;background:#fffed;padding:8px 11px;border:1px solid #dce4d9;border-radius:10px;color:#53645a;font-size:11px}
+.field{display:grid;gap:6px;margin:12px 0}
+.field label{font-size:11px;color:#53645a;font-weight:800;letter-spacing:.02em}
+.field input,.field select{width:100%;border:1px solid #dce2d8;border-radius:12px;background:#fbfcf9;color:var(--ink);padding:12px 13px;outline:none}
+.field input:focus,.field select:focus{border-color:var(--teal);box-shadow:0 0 0 3px #176b5815}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.check{display:flex;gap:10px;align-items:flex-start;padding:10px 0;color:#4f5d54;font-size:13px}
+.check input{margin-top:5px;accent-color:var(--teal)}
+.notice{padding:14px 16px;border-radius:14px;background:#e9f3ed;border:1px solid #d4e7da;color:#275d4a;font-size:13px}
+.notice.warn{background:var(--warn);border-color:#f0dfb2;color:#795d21}
+.notice.danger{background:var(--danger);border-color:#f2d0ca;color:#933f34}
+.list{display:grid;gap:9px}
+.person{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px;background:#fbfcf9;border:1px solid #e8ece4;border-radius:14px}
+.person strong{font-size:13px}
+.person small{display:block;color:var(--muted);font-size:11px;line-height:1.45;margin-top:3px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#68a98c;margin-right:7px}
+.hidden{display:none!important}
+.price{font-size:38px;font-weight:900;letter-spacing:-.07em;color:var(--teal)}
+.price small{font-size:13px;color:var(--muted);font-weight:500;letter-spacing:0}
+.tabs{display:flex;gap:5px;flex-wrap:wrap;margin:19px 0 22px;padding:5px;background:#eeefe9;border:1px solid #e2e5dd;border-radius:999px;width:max-content;max-width:100%}
+.tabs button{background:transparent;color:#657068;border:0;padding:10px 15px;font-size:12px}
+.tabs button:hover{box-shadow:none;background:#fff}
+.tabs button.active{background:#fff;color:var(--teal);box-shadow:0 2px 8px #18211f10}
+.foot{color:#7a857d;text-align:center;font-size:11px;padding-top:28px}
+.modalback{position:fixed;inset:0;background:#1d292b70;z-index:10;display:grid;place-items:center;padding:16px;backdrop-filter:blur(5px)}
+.modal{max-width:540px;width:100%;max-height:90vh;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:24px;padding:25px;box-shadow:var(--shadow)}
+.modal h2{font-size:25px}
+.x{float:right;background:#f1f4ef;color:var(--ink);border:1px solid #e2e5dd;padding:5px 11px}
+.tag{font-size:10px;background:#e9f3ed;padding:5px 9px;border-radius:999px;color:#28664f;font-weight:800;white-space:nowrap}
+hr{border:0;border-top:1px solid var(--line)}
+ul,ol{line-height:1.75}
+@media(max-width:760px){
+  header{padding:12px 17px}.wrap{padding:18px 15px 45px}
+  .hero{padding:25px 22px 24px;border-radius:22px 22px 5px 22px}
+  h1{font-size:clamp(37px,11vw,53px)}
+  .span8,.span4,.span6{grid-column:span 12}
+  .statrow{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .map{height:235px}.card{padding:18px}
+  .tabs{width:100%;border-radius:16px;display:grid;grid-template-columns:1fr 1fr}
+  .tabs button{border-radius:12px;padding:11px 8px}
+  header .pill{display:none}
+}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+
+
+#authOverlay{position:fixed;inset:0;z-index:30;display:grid;place-items:center;padding:16px;background:#1d292b85;backdrop-filter:blur(9px)}
+.auth-card{width:min(100%,500px);max-height:92vh;overflow:auto;background:#fff;border-radius:25px;padding:25px;box-shadow:var(--shadow);position:relative}
+.auth-card input{display:block;width:100%;margin:6px 0 13px;padding:12px;border:1px solid #dce2d8;border-radius:12px;background:#fbfcf9}
+#mapStatus{font-size:12px;margin-top:8px}.avatar{font-size:64px;text-align:center;animation:float 3s ease-in-out infinite}@keyframes float{50%{transform:translateY(-5px)}}
+#shareCodeBox{overflow-wrap:anywhere;background:#f5f7f1;border-radius:12px;padding:12px;margin-top:10px}
+@media(prefers-reduced-motion:reduce){.avatar{animation:none}}
+</style></head><body>
+<header><div class="brand"><span class="logo">K</span><span>KinTrack <span class="small">/ Safety & Assets</span></span></div><div class="row"><span class="pill" id="trialBadge">Sign in to continue</span><button class="secondary" id="accountBtn">Account</button><button class="secondary hidden" id="signOutBtn">Sign out</button></div></header>
+<main class="wrap">
+<section class="hero"><div><div class="eyebrow">Consent-first location sharing</div><h1>Your people. Your assets.<br><span>Your choice.</span></h1><p>Real-time location is shared only after each participant accepts. Stop sharing whenever you choose.</p></div><div class="row"><button id="inviteBtn">＋ Invite a participant</button><button class="secondary" id="stopAllBtn">Stop my sharing</button></div></section>
+<div class="notice warn" style="margin-bottom:16px"><strong>Privacy rule:</strong> KinTrack does not collect location until you explicitly consent and grant browser permission. Participants must accept the invite on their own account. Browser sharing runs only while this page is open.</div>
+<div class="tabs"><button class="active" data-tab="overview">Overview</button><button data-tab="consent">Consent & devices</button><button data-tab="billing">Trial & billing</button><button data-tab="privacy">Privacy centre</button></div>
+<section id="tab-overview" class="grid">
+<div class="card span8"><div class="row" style="justify-content:space-between"><h2>Live location map</h2><span class="tag" id="mapBadge">Waiting for consent</span></div><div id="map" class="map" aria-label="Google map showing only consenting participants"></div><p id="mapStatus" aria-live="polite">Sign in, create a sharing session, and explicitly start sharing to use the map.</p><div class="row" style="margin-top:12px"><button id="locBtn">Share my current location</button><button class="secondary" id="stopLocBtn">Stop location sharing</button></div><p id="locationStatus" aria-live="polite">Location sharing is off.</p></div>
+<div class="card span4"><h2>Workspace summary</h2><div class="statrow"><div class="stat"><strong id="peopleCount">0</strong><small>Participants</small></div><div class="stat"><strong id="assetCount">0</strong><small>Assets</small></div><div class="stat"><strong id="consentCount">0</strong><small>Active consents</small></div></div><hr style="border-color:var(--line);margin:18px 0"><h2>Recent activity</h2><div class="list" id="activity"><p>No activity yet.</p></div></div>
+<div class="card span6"><h2>People sharing with you</h2><p>Only active participants in your accepted sharing sessions appear here.</p><div class="list" id="peopleList"><p>No participants yet. Create an invite or join using a code.</p></div><div class="field"><label>Join a session with invite code</label><input id="joinCode" placeholder="10-character invite code" maxlength="10" autocomplete="off"></div><button id="joinBtn">Review and join session</button><p id="joinStatus" aria-live="polite"></p></div>
+<div class="card span6"><h2>Registered assets</h2><p>Track items you own or are authorized to manage.</p><div class="field"><label>Asset name</label><input id="assetName" maxlength="100" placeholder="e.g. Family vehicle"></div><div class="field"><label>Asset identifier (avoid sensitive details)</label><input id="assetId" maxlength="100" placeholder="e.g. KT-001"></div><button id="addAssetBtn">Add asset</button><div class="list" id="assetList" style="margin-top:12px"></div></div>
+</section>
+<section id="tab-consent" class="grid hidden"><div class="card span6"><h2>Share your location</h2><p>Sharing is opt-in and expires automatically. The selected participants can see your latest coordinates while your consent is active.</p><label class="check"><input type="checkbox" id="locConsent"><span>I understand my precise location will be visible to the accepted participants in this session until the selected expiry, and I can stop at any time.</span></label><div class="field"><label>Sharing duration</label><select id="duration"><option value="15">15 minutes</option><option value="60">1 hour</option><option value="480">8 hours</option><option value="1440">24 hours</option></select></div><button id="consentShareBtn">Confirm consent & start sharing</button><p class="small">Browser geolocation requires HTTPS and device permission. This website does not provide hidden/background tracking.</p></div>
+<div class="card span6"><h2>Invite a participant</h2><p>Create a time-limited session. Give the code only to the person you want to invite; they must enter it and accept on their own account.</p><button id="createShareBtn">Create sharing invite</button><div id="shareCodeBox" class="hidden"></div><p id="pairStatus" aria-live="polite">No invite created.</p></div>
+<div class="card span12"><h2>Permissions checklist</h2><div class="grid"><div class="span6"><label class="check"><input type="checkbox" checked disabled><span>Separate account and location consent</span></label><label class="check"><input type="checkbox" checked disabled><span>Expiry and revocation controls</span></label><label class="check"><input type="checkbox" checked disabled><span>Participants join by invite and consent</span></label></div><div class="span6"><label class="check"><input type="checkbox" checked disabled><span>No contact harvesting or covert device discovery</span></label><label class="check"><input type="checkbox" checked disabled><span>Location reads limited by Firestore rules</span></label><label class="check"><input type="checkbox" checked disabled><span>Server-side payment credentials only</span></label></div></div></div></section>
+<section id="tab-billing" class="grid"><div class="card span8"><div class="eyebrow">KinTrack Plus</div><h2>Transparent M-Pesa checkout</h2><div class="price">KSh 100 <small>/ day</small></div><p>One payment purchases one day of access. This checkout initiates an STK Push; access is granted only after the backend verifies a successful transaction.</p><div class="notice warn" style="margin-top:14px">Do not pay until your production Daraja credentials and callback endpoint have been configured and tested.</div><div class="field"><label>M-Pesa phone number</label><input id="phone" placeholder="2547XXXXXXXX" inputmode="numeric" autocomplete="tel"></div><label class="check"><input type="checkbox" id="payConfirm"><span>I confirm the price is KSh 100 for one subscription day and want to request an M-Pesa STK prompt. I understand I can cancel it on my phone.</span></label><button id="payBtn">Request M-Pesa STK Push</button><p id="payStatus" aria-live="polite"></p></div>
+<div class="card span4"><h2>Subscription status</h2><div id="trialState" class="notice">Sign in to load subscription status.</div><p class="small">The browser never marks a payment as successful. Only the server callback plus Daraja verification can update a payment.</p></div><div class="card span12"><h2>Payment security</h2><ol style="color:var(--muted);padding-left:20px"><li>Daraja secrets stay in Firebase Functions secrets.</li><li>Each checkout is stored with a unique CheckoutRequestID before a callback is processed.</li><li>Callbacks are idempotent and queried server-to-server before entitlement is granted.</li><li>Production onboarding must confirm Daraja's current callback and transaction-query behaviour with Safaricom.</li></ol></div></section>
+<section id="tab-privacy" class="grid hidden"><div class="card span6"><h2>Privacy centre</h2><div class="list"><div class="person"><div><strong>Precise location</strong><small>Stored only while consent is active; visible only to active session members.</small></div><span class="tag">Opt-in</span></div><div class="person"><div><strong>Contacts</strong><small>No address-book upload.</small></div><span class="tag">Off</span></div><div class="person"><div><strong>Calls / messages</strong><small>No interception or hidden recording.</small></div><span class="tag">Off</span></div><div class="person"><div><strong>Retention</strong><small>Session expiry disables reads; scheduled cleanup should be enabled for old records.</small></div><span class="tag">Review</span></div></div></div><div class="card span6"><h2>Export & revoke</h2><p>Stop your current location sharing to revoke your consent immediately. For account deletion and data access requests, contact the service operator until self-service deletion is implemented.</p><div class="row"><button class="secondary" id="exportBtn">Export my assets</button><button class="danger" id="deleteBtn">Delete my assets</button></div><hr style="margin:18px 0"><h2>Before public launch</h2><ul style="color:var(--muted);padding-left:20px"><li>Publish a privacy policy, terms and data retention schedule.</li><li>Review Kenya Data Protection Act obligations and registration requirements.</li><li>Configure Firebase App Check, abuse limits, backups and monitoring.</li><li>Test payment reconciliation and refund/customer-support procedures.</li></ul></div><div class="card span12"><h2>Account activity</h2><div id="auditList" class="list"><p>Sign in to view account activity.</p></div></div></section>
+<div class="foot">KinTrack · Consent by design · Location sharing is optional and revocable · Browser must remain open for live updates</div></main>
+<div id="modalBack" class="modalback hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal"><button class="x" id="closeModal">✕</button><h2 id="modalTitle">Invite a participant</h2><p id="modalText">Share this one-time invite code only with the person you intend to invite.</p><div class="field"><label>Invite code</label><input id="inviteLink" readonly></div><div class="row"><button id="copyInviteBtn">Copy code</button><button class="secondary" id="doneModal">Done</button></div></div></div>
+<div id="authOverlay" class="modalback" role="dialog" aria-modal="true" aria-labelledby="authTitle"><section class="auth-card"><div class="eyebrow" style="text-align:center">KinTrack secure access</div><div class="avatar" aria-hidden="true">👮🏽</div><h2 id="authTitle" style="font-size:26px;text-align:center">Join KinTrack</h2><p id="authIntro" style="text-align:center">Create an account to manage your assets and sharing preferences.</p><form id="authForm"><div id="registerFields"><label for="fullName">Full name</label><input id="fullName" maxlength="100" autocomplete="name" required><label for="authPhone">Phone (optional)</label><input id="authPhone" maxlength="20" autocomplete="tel"></div><label for="email">Email address</label><input id="email" type="email" maxlength="254" autocomplete="email" required><label for="password">Password (minimum 12 characters)</label><input id="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required><label class="check"><input id="termsConsent" type="checkbox" required><span>I agree to the account terms and privacy notice. This does not enable location sharing.</span></label><button id="authSubmit" type="submit" style="width:100%">Create account</button></form><p id="authMessage" aria-live="polite"></p><p style="text-align:center;font-size:13px">Already registered? <button id="switchAuth" type="button" class="secondary">Sign in</button></p></section></div>
+<script src="firebase-config.js"></script><script type="module" src="app.js"></script></body></html>

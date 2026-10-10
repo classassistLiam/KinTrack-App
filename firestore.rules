@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+    function isActiveMember(shareId) {
+      return signedIn() && exists(/databases/$(database)/documents/shares/$(shareId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/shares/$(shareId)/members/$(request.auth.uid)).data.active == true
+        && get(/databases/$(database)/documents/shares/$(shareId)).data.status == 'active'
+        && request.time < get(/databases/$(database)/documents/shares/$(shareId)).data.expiresAt;
+    }
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create, update: if isSelf(uid)
+        && request.resource.data.keys().hasOnly(['displayName','email','phone','createdAt','updatedAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 100;
+      allow delete: if false;
+    }
+    match /assets/{assetId} {
+      allow read: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerUid','name','identifier','createdAt'])
+        && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 100
+        && request.resource.data.identifier is string && request.resource.data.identifier.size() <= 100;
+      allow update, delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+    match /shares/{shareId} {
+      allow read: if isActiveMember(shareId);
+      allow write: if false; // Cloud Functions only
+      match /members/{uid} {
+        allow read: if isActiveMember(shareId);
+        allow write: if false; // consent and invite acceptance are server-controlled
+      }
+      match /locations/{uid} {
+        allow read: if isActiveMember(shareId);
+        allow create, update: if isSelf(uid) && isActiveMember(shareId)
+          && get(/databases/$(database)/documents/shares/$(shareId)/members/$(uid)).data.active == true
+          && request.resource.data.keys().hasOnly(['uid','lat','lng','accuracy','updatedAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.lat is number && request.resource.data.lat >= -90 && request.resource.data.lat <= 90
+          && request.resource.data.lng is number && request.resource.data.lng >= -180 && request.resource.data.lng <= 180;
+        allow delete: if isSelf(uid) && isActiveMember(shareId);
+      }
+    }
+    match /subscriptions/{uid} { allow read: if isSelf(uid); allow write: if false; }
+    match /payments/{paymentId} { allow read, write: if false; }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
