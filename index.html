@@ -1,5 +1,11 @@
 <!doctype html><html lang="en"><head><!-- Ensure Google Maps domains are allowed in your CSP -->
-<meta http-equiv="Content-Security-Policy" content="script-src 'self' https://maps.googleapis.com https://maps.gstatic.com; img-src 'self' https://maps.googleapis.com https://maps.gstatic.com data:; frame-src https://www.google.com;"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin-when-cross-origin"><meta name="description" content="KinTrack — voluntary, consent-first location sharing and asset tracking."><title>KinTrack — Safety, on your terms</title><style>
+
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://maps.googleapis.com https://maps.gstatic.com; connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net https://*.firebaseio.com wss://*.firebaseio.com https://*.firebasestorage.app https://*.google-analytics.com; img-src 'self' https://maps.googleapis.com https://maps.gstatic.com https://*.googleusercontent.com https://*.firebasestorage.app data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; frame-src https://www.google.com https://*.firebaseapp.com;">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="description" content="KinTrack — voluntary, consent-first location sharing and asset tracking.">
+<title>KinTrack — Safety, on your terms</title>
+<style>
 
 :root{
   --bg:#f7f7f2;--paper:#ffffff;--ink:#18211f;--muted:#66716b;
