@@ -1,24 +1,39 @@
 
 /***************************************************************
- * KINTRACK — COMPLETE APPLICATION SCRIPT
+ * KINTRACK — UPDATED DASHBOARD APPLICATION
  * Firebase SDK: 10.14.1
  * Firebase project: kintrack-app-38c0a
  * Functions region: africa-south1
  *
- * Includes:
- * - Firebase authentication
- * - Firestore connection recovery and server reads
+ * Compatible with the redesigned KinTrack index.html.
+ *
+ * FEATURES
+ * - Firebase email/password authentication
+ * - Firestore connection recovery
+ * - Consent-based location sharing
+ * - Google Maps: roadmap, satellite, hybrid and terrain
+ * - Live consenting participant markers
  * - Session restoration
- * - Consent-based GPS location sharing
- * - Google Maps and live participant locations
- * - Sharing invitations and joining
- * - Asset management, export and deletion
- * - Subscription status
- * - M-Pesa checkout
+ * - Invitation creation and joining
+ * - Asset registration and management
+ * - Asset export and deletion
+ * - Subscription monitoring
+ * - M-Pesa checkout through Firebase Functions
+ *
+ * IMPORTANT
+ * - No covert tracking.
+ * - No automatic contact uploads.
+ * - No browser-only background tracking promises.
+ * - Existing Firestore paths and callable function names retained.
  ***************************************************************/
 
+
+/* =============================================================
+   1. FIREBASE IMPORTS
+============================================================= */
+
 import { initializeApp } from
-  'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+  "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 
 import {
   getAuth,
@@ -28,7 +43,7 @@ import {
   updateProfile,
   signOut
 } from
-  'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+  "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 
 import {
   initializeFirestore,
@@ -45,17 +60,17 @@ import {
   deleteDoc,
   getDocs
 } from
-  'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+  "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 import {
   getFunctions,
   httpsCallable
 } from
-  'https://www.gstatic.com/firebasejs/10.14.1/firebase-functions.js';
+  "https://www.gstatic.com/firebasejs/10.14.1/firebase-functions.js";
 
 
 /* =============================================================
-   1. CONFIGURATION AND STATE
+   2. CONFIGURATION AND APPLICATION STATE
 ============================================================= */
 
 const cfg = window.KINTRACK_CONFIG || {};
@@ -63,11 +78,11 @@ const $ = id => document.getElementById(id);
 
 const state = {
   user: null,
-  mode: 'register',
+  mode: "register",
   busy: false,
 
-  shareId: sessionStorage.getItem('ktShareId') || '',
-  inviteCode: '',
+  shareId: sessionStorage.getItem("ktShareId") || "",
+  inviteCode: "",
 
   watchId: null,
   expiryTimer: null,
@@ -84,7 +99,10 @@ const state = {
 
   networkOnline: navigator.onLine,
   authReady: false,
-  locationStarting: false
+  locationStarting: false,
+
+  mapReady: false,
+  lastMapBoundsUpdate: 0
 };
 
 let app;
@@ -94,7 +112,7 @@ let functions;
 
 
 /* =============================================================
-   2. GENERAL UTILITIES
+   3. GENERAL UTILITIES
 ============================================================= */
 
 function say(id, message) {
@@ -102,114 +120,221 @@ function say(id, message) {
   if (element) element.textContent = message;
 }
 
-function logActivity(title, detail = '') {
-  const activity = $('activity');
+function setButtonBusy(id, busy, busyText = "Please wait…") {
+  const button = $(id);
+  if (!button) return;
+
+  if (busy) {
+    button.dataset.originalText ||= button.textContent;
+    button.disabled = true;
+    button.textContent = busyText;
+  } else {
+    button.disabled = false;
+
+    if (button.dataset.originalText) {
+      button.textContent = button.dataset.originalText;
+      delete button.dataset.originalText;
+    }
+  }
+}
+
+function logActivity(title, detail = "") {
+  const activity = $("activity");
   if (!activity) return;
 
-  const row = document.createElement('div');
-  row.className = 'person';
+  const row = document.createElement("div");
+  row.className = "person";
 
-  const left = document.createElement('div');
-  const strong = document.createElement('strong');
-  const small = document.createElement('small');
+  const left = document.createElement("div");
+  const strong = document.createElement("strong");
+  const small = document.createElement("small");
 
   strong.textContent = title;
   small.textContent = detail || new Date().toLocaleString();
 
   left.append(strong, small);
 
-  const tag = document.createElement('span');
-  tag.className = 'tag';
-  tag.textContent = 'Live';
+  const tag = document.createElement("span");
+  tag.className = "tag";
+  tag.textContent = "Activity";
 
   row.append(left, tag);
   activity.prepend(row);
 
-  while (activity.children.length > 5) {
+  while (activity.children.length > 8) {
     activity.lastElementChild.remove();
   }
 }
 
-function setTab(name) {
-  document.querySelectorAll('[data-tab]').forEach(button => {
-    button.classList.toggle('active', button.dataset.tab === name);
-  });
+function showEmptyList(id, message) {
+  const element = $(id);
+  if (!element) return;
 
-  ['overview', 'consent', 'billing', 'privacy'].forEach(tab => {
-    const element = $('tab-' + tab);
-    if (element) {
-      element.classList.toggle('hidden', tab !== name);
-    }
-  });
+  element.replaceChildren();
+
+  const paragraph = document.createElement("p");
+  paragraph.textContent = message;
+
+  element.append(paragraph);
 }
 
-document.querySelectorAll('[data-tab]').forEach(button => {
-  button.addEventListener('click', () => setTab(button.dataset.tab));
+function formatDate(value) {
+  if (!value) return "Not specified";
+
+  const date = value?.toDate
+    ? value.toDate()
+    : new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Not specified";
+  }
+
+  return date.toLocaleDateString();
+}
+
+function safeText(value, fallback = "") {
+  return typeof value === "string" ? value.trim() : fallback;
+}
+
+
+/* =============================================================
+   4. DASHBOARD NAVIGATION
+============================================================= */
+
+const dashboardTabs = [
+  "overview",
+  "consent",
+  "billing",
+  "privacy"
+];
+
+const tabTitles = {
+  overview: "Dashboard overview",
+  consent: "Location & sharing",
+  billing: "Subscription & billing",
+  privacy: "Privacy centre"
+};
+
+function setTab(name) {
+  if (!dashboardTabs.includes(name)) return;
+
+  document.querySelectorAll("[data-tab]").forEach(button => {
+    button.classList.toggle(
+      "active",
+      button.dataset.tab === name
+    );
+  });
+
+  dashboardTabs.forEach(tab => {
+    const section = $("tab-" + tab);
+
+    if (section) {
+      section.classList.toggle("hidden", tab !== name);
+    }
+  });
+
+  say("pageTitle", tabTitles[name]);
+
+  $("sidebar")?.classList.remove("open");
+  $("mobileMenu")?.setAttribute("aria-expanded", "false");
+}
+
+document.querySelectorAll("[data-tab]").forEach(button => {
+  button.addEventListener("click", () => {
+    setTab(button.dataset.tab);
+  });
+});
+
+$("mobileMenu")?.addEventListener("click", () => {
+  const sidebar = $("sidebar");
+  if (!sidebar) return;
+
+  const open = sidebar.classList.toggle("open");
+
+  $("mobileMenu").setAttribute(
+    "aria-expanded",
+    String(open)
+  );
+});
+
+$("topAccountBtn")?.addEventListener("click", () => {
+  $("accountBtn")?.click();
 });
 
 
 /* =============================================================
-   3. ERROR HANDLING AND FIRESTORE RETRIES
+   5. ERROR HANDLING
 ============================================================= */
 
 function friendlyError(error) {
-  const code = String(error?.code || '').toLowerCase();
-  const message = String(error?.message || '');
+  const code = String(error?.code || "").toLowerCase();
+  const message = String(error?.message || "");
 
   const errors = {
-    'auth/email-already-in-use':
-      'This email already has an account. Sign in instead.',
+    "auth/email-already-in-use":
+      "This email already has an account. Please sign in.",
 
-    'auth/invalid-credential':
-      'Email or password is incorrect.',
+    "auth/invalid-credential":
+      "Email or password is incorrect.",
 
-    'auth/weak-password':
-      'Use a password with at least 12 characters.',
+    "auth/weak-password":
+      "Use a stronger password with at least 12 characters.",
 
-    'auth/too-many-requests':
-      'Too many attempts. Wait and try again.',
+    "auth/too-many-requests":
+      "Too many attempts. Wait a moment and try again.",
 
-    'auth/network-request-failed':
-      'Authentication network error. Check your internet connection.',
+    "auth/network-request-failed":
+      "Authentication network error. Check your connection.",
 
-    'permission-denied':
-      'Access denied by Firestore security rules.',
+    "permission-denied":
+      "Access denied by Firebase security rules.",
 
-    'functions/unauthenticated':
-      'Please sign in first.',
+    "functions/unauthenticated":
+      "Please sign in first.",
 
-    'unavailable':
-      'Firebase is temporarily unavailable. Check your connection.',
+    "functions/permission-denied":
+      "You do not have permission to perform this action.",
 
-    'deadline-exceeded':
-      'The Firebase request timed out. Please try again.',
+    "functions/not-found":
+      "The requested sharing session or record was not found.",
 
-    'failed-precondition':
-      'The requested operation cannot be completed in the current state.'
+    "functions/failed-precondition":
+      "This operation cannot be completed in the current state.",
+
+    "unavailable":
+      "Firebase is temporarily unavailable. Check your connection.",
+
+    "deadline-exceeded":
+      "The Firebase request timed out. Please retry.",
+
+    "failed-precondition":
+      "The requested operation cannot be completed in the current state."
   };
 
   if (errors[code]) return errors[code];
 
+  const lower = message.toLowerCase();
+
   if (
-    message.toLowerCase().includes('err_connection_closed') ||
-    message.toLowerCase().includes('client is offline') ||
-    message.toLowerCase().includes('network')
+    lower.includes("err_connection_closed") ||
+    lower.includes("client is offline") ||
+    lower.includes("network")
   ) {
-    return 'Firestore connection lost. Check your internet and retry.';
+    return "Connection interrupted. Check your internet and retry.";
   }
 
-  if (message.includes('Missing or insufficient permissions')) {
-    return 'Firebase denied this operation. Check your Firestore rules.';
+  if (lower.includes("missing or insufficient permissions")) {
+    return "Firebase denied this operation. Check your Firestore rules.";
   }
 
-  return message || 'Something went wrong. Check your connection.';
+  return message || "Something went wrong. Please try again.";
 }
 
-function reportError(target, error, prefix = '') {
-  console.error('KINTRACK_ERROR', {
-    operation: prefix || 'Application',
-    code: error?.code || 'unknown',
-    name: error?.name || 'Error',
+function reportError(target, error, prefix = "") {
+  console.error("KINTRACK_ERROR", {
+    operation: prefix || "Application",
+    code: error?.code || "unknown",
+    name: error?.name || "Error",
     message: error?.message || String(error),
     online: navigator.onLine,
     shareId: state.shareId || null,
@@ -218,33 +343,33 @@ function reportError(target, error, prefix = '') {
 
   say(
     target,
-    (prefix ? prefix + ': ' : '') + friendlyError(error)
+    (prefix ? prefix + ": " : "") + friendlyError(error)
   );
 }
 
 function isRetryableFirestoreError(error) {
-  const code = String(error?.code || '').toLowerCase();
-  const message = String(error?.message || '').toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
+  const message = String(error?.message || "").toLowerCase();
 
   return [
-    'unavailable',
-    'deadline-exceeded',
-    'aborted',
-    'cancelled'
+    "unavailable",
+    "deadline-exceeded",
+    "aborted",
+    "cancelled"
   ].includes(code) ||
-    message.includes('err_connection_closed') ||
-    message.includes('client is offline') ||
-    message.includes('network');
+    message.includes("err_connection_closed") ||
+    message.includes("client is offline") ||
+    message.includes("network");
 }
 
-/*
- * Reads directly from the Firestore server.
- * Retries temporary connection failures.
- * Permission errors are NOT retried.
- */
+
+/* =============================================================
+   6. FIRESTORE SERVER READ WITH RETRIES
+============================================================= */
+
 async function readServerDocument(
   reference,
-  operation = 'Firestore read',
+  operation = "Firestore read",
   attempts = 3
 ) {
   let lastError;
@@ -256,14 +381,14 @@ async function readServerDocument(
     } catch (error) {
       lastError = error;
 
-      console.error('KINTRACK_FIRESTORE_READ', {
+      console.error("KINTRACK_FIRESTORE_READ", {
         operation,
         attempt,
         attempts,
-        code: error?.code || 'unknown',
+        code: error?.code || "unknown",
         message: error?.message || String(error),
         online: navigator.onLine,
-        path: reference?.path || 'unknown'
+        path: reference?.path || "unknown"
       });
 
       if (
@@ -273,13 +398,13 @@ async function readServerDocument(
         throw error;
       }
 
-      await new Promise(resolve =>
-        setTimeout(resolve, 700 * attempt)
-      );
-
       if (!navigator.onLine) {
         throw error;
       }
+
+      await new Promise(resolve =>
+        setTimeout(resolve, 700 * attempt)
+      );
     }
   }
 
@@ -288,141 +413,156 @@ async function readServerDocument(
 
 
 /* =============================================================
-   4. NETWORK MONITORING
+   7. NETWORK MONITORING
 ============================================================= */
 
 function updateNetworkStatus(online) {
   state.networkOnline = online;
 
   const message = online
-    ? 'Internet connection available.'
-    : 'You are offline. Live location updates are paused.';
+    ? "Internet connection available."
+    : "You are offline. Live location updates are paused.";
 
-  say('networkStatus', message);
-  say('connectionStatus', message);
+  say("networkStatus", message);
+  say("connectionStatus", message);
 
   if (!online) {
     say(
-      'locationStatus',
-      'Connection lost. KinTrack will attempt to reconnect.'
+      "locationStatus",
+      "Connection lost. Reconnect before continuing live sharing."
     );
   }
 }
 
-window.addEventListener('offline', () => {
+window.addEventListener("offline", () => {
   updateNetworkStatus(false);
 });
 
-window.addEventListener('online', async () => {
+window.addEventListener("online", async () => {
   updateNetworkStatus(true);
 
   if (!db) return;
 
   try {
     await enableNetwork(db);
-    console.info('KinTrack: Firestore network restored.');
+
+    console.info("KinTrack: Firestore network restored.");
 
     if (state.user && state.shareId) {
-      restoreSharingSession(state.user);
+      await restoreSharingSession(state.user);
     }
 
   } catch (error) {
-    console.error('Firestore reconnection failed:', error);
+    console.error("Firestore reconnection failed:", error);
   }
 });
 
 
 /* =============================================================
-   5. AUTHENTICATION
+   8. AUTHENTICATION
 ============================================================= */
 
-function showAuth(mode = 'register') {
+function showAuth(mode = "register") {
   state.mode = mode;
 
-  if ($('termsConsent')) {
-    $('termsConsent').required = mode === 'register';
+  if ($("termsConsent")) {
+    $("termsConsent").required = mode === "register";
   }
 
-  $('authOverlay')?.classList.remove('hidden');
+  $("authOverlay")?.classList.remove("hidden");
 
   say(
-    'authTitle',
-    mode === 'register' ? 'Join KinTrack' : 'Welcome back'
+    "authTitle",
+    mode === "register" ? "Join KinTrack" : "Welcome back"
   );
 
   say(
-    'authIntro',
-    mode === 'register'
-      ? 'Create an account to manage your assets and sharing preferences.'
-      : 'Sign in to access your account.'
+    "authIntro",
+    mode === "register"
+      ? "Create an account to manage your assets and sharing preferences."
+      : "Sign in to access your account."
   );
 
-  $('registerFields')?.classList.toggle(
-    'hidden',
-    mode !== 'register'
+  $("registerFields")?.classList.toggle(
+    "hidden",
+    mode !== "register"
   );
 
-  if ($('fullName')) {
-    $('fullName').required = mode === 'register';
+  if ($("fullName")) {
+    $("fullName").required = mode === "register";
   }
 
-  if ($('password')) {
-    $('password').minLength = mode === 'register' ? 12 : 1;
-    $('password').autocomplete =
-      mode === 'register' ? 'new-password' : 'current-password';
+  if ($("password")) {
+    $("password").minLength = mode === "register" ? 12 : 1;
+
+    $("password").autocomplete =
+      mode === "register"
+        ? "new-password"
+        : "current-password";
   }
 
-  if ($('authSubmit')) {
-    $('authSubmit').textContent =
-      mode === 'register' ? 'Create account' : 'Sign in';
+  if ($("authSubmit")) {
+    $("authSubmit").textContent =
+      mode === "register" ? "Create account" : "Sign in";
   }
 
-  if ($('switchAuth')) {
-    $('switchAuth').textContent =
-      mode === 'register' ? 'Sign in' : 'Create account';
+  if ($("switchAuth")) {
+    $("switchAuth").textContent =
+      mode === "register" ? "Sign in" : "Create account";
   }
 
-  say('authMessage', '');
+  say("authMessage", "");
 }
 
-$('switchAuth')?.addEventListener('click', () => {
-  showAuth(state.mode === 'register' ? 'login' : 'register');
+$("switchAuth")?.addEventListener("click", () => {
+  showAuth(
+    state.mode === "register" ? "login" : "register"
+  );
 });
 
-$('authForm')?.addEventListener('submit', async event => {
+$("authForm")?.addEventListener("submit", async event => {
   event.preventDefault();
 
   if (state.busy) return;
 
-  if (!cfg.firebase || cfg.firebase.apiKey?.startsWith('REPLACE_')) {
-    say('authMessage', 'Configure firebase-config.js first.');
+  if (!cfg.firebase?.apiKey) {
+    say(
+      "authMessage",
+      "Firebase configuration is missing. Check firebase-config.js."
+    );
     return;
   }
 
   state.busy = true;
+  setButtonBusy("authSubmit", true, "Connecting…");
 
-  if ($('authSubmit')) $('authSubmit').disabled = true;
-
-  say('authMessage', 'Connecting securely…');
+  say("authMessage", "Connecting securely…");
 
   try {
-    if (state.mode === 'register') {
-      if (!$('termsConsent')?.checked) {
+    const email = $("email")?.value.trim();
+    const password = $("password")?.value || "";
+
+    if (!email || !password) {
+      throw new Error("Enter your email and password.");
+    }
+
+    if (state.mode === "register") {
+      if (!$("termsConsent")?.checked) {
         throw new Error(
-          'Please accept the account terms and privacy notice.'
+          "Please accept the account terms and privacy notice."
         );
       }
 
-      const name = $('fullName')?.value.trim();
+      const name = $("fullName")?.value.trim();
 
       if (!name) {
-        throw new Error('Enter your full name.');
+        throw new Error("Enter your full name.");
       }
 
       const credential = await createUserWithEmailAndPassword(
         auth,
-        $('email').value.trim(),
-        $('password').value
+        email,
+        password
       );
 
       await updateProfile(credential.user, {
@@ -430,125 +570,232 @@ $('authForm')?.addEventListener('submit', async event => {
       });
 
       await setDoc(
-        doc(db, 'users', credential.user.uid),
+        doc(db, "users", credential.user.uid),
         {
           displayName: name,
           email: credential.user.email,
-          phone: $('authPhone')?.value.trim() || '',
+          phone: $("authPhone")?.value.trim() || "",
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         }
       );
 
-      say('authMessage', 'Account created successfully.');
+      say("authMessage", "Account created successfully.");
 
     } else {
       await signInWithEmailAndPassword(
         auth,
-        $('email').value.trim(),
-        $('password').value
+        email,
+        password
       );
 
-      say('authMessage', 'Signed in successfully.');
+      say("authMessage", "Signed in successfully.");
     }
 
   } catch (error) {
-    reportError('authMessage', error);
+    reportError("authMessage", error);
 
   } finally {
     state.busy = false;
-
-    if ($('authSubmit')) $('authSubmit').disabled = false;
+    setButtonBusy("authSubmit", false);
   }
 });
 
-$('accountBtn')?.addEventListener('click', () => {
-  if (!state.user) showAuth('login');
-  else setTab('privacy');
+$("accountBtn")?.addEventListener("click", () => {
+  if (!state.user) {
+    showAuth("login");
+  } else {
+    setTab("privacy");
+  }
 });
 
-$('signOutBtn')?.addEventListener('click', async () => {
+$("signOutBtn")?.addEventListener("click", async () => {
   try {
-    await stopLocationWatch(false);
+    await stopLocationWatch(true);
     await signOut(auth);
+
   } catch (error) {
-    reportError('authMessage', error, 'Sign out failed');
+    reportError("authMessage", error, "Sign out failed");
   }
 });
 
 
 /* =============================================================
-   6. GOOGLE MAPS
+   9. GOOGLE MAPS INITIALIZATION
 ============================================================= */
 
-async function initMap() {
-  const key = cfg.mapsApiKey;
+function loadGoogleMaps() {
+  return new Promise((resolve, reject) => {
+    if (window.google?.maps) {
+      resolve();
+      return;
+    }
 
-  if (!key || key.startsWith('REPLACE_')) {
-    say(
-      'mapStatus',
-      'Google Maps is not configured. Add your restricted browser key.'
-    );
-    return;
-  }
+    if (window.__kinTrackMapsLoading) {
+      window.__kinTrackMapsLoading.then(resolve).catch(reject);
+      return;
+    }
 
-  try {
-    await new Promise((resolve, reject) => {
-      if (window.google?.maps) {
-        resolve();
-        return;
+    const key = cfg.mapsApiKey;
+
+    if (!key || key.startsWith("REPLACE_")) {
+      reject(new Error(
+        "Google Maps key is missing from firebase-config.js."
+      ));
+      return;
+    }
+
+    window.__kinTrackMapsLoading = new Promise(
+      (innerResolve, innerReject) => {
+        const script = document.createElement("script");
+
+        script.src =
+          "https://maps.googleapis.com/maps/api/js" +
+          `?key=${encodeURIComponent(key)}` +
+          "&loading=async&callback=__kinTrackMapReady";
+
+        script.async = true;
+
+        window.__kinTrackMapReady = innerResolve;
+
+        script.onerror = () => {
+          innerReject(
+            new Error(
+              "Google Maps failed to load. Check API key restrictions and billing."
+            )
+          );
+        };
+
+        document.head.appendChild(script);
+
+        setTimeout(() => {
+          if (!window.google?.maps) {
+            innerReject(
+              new Error("Google Maps loading timed out.")
+            );
+          }
+        }, 20000);
       }
+    );
 
-      const script = document.createElement('script');
+    window.__kinTrackMapsLoading.then(resolve).catch(reject);
+  });
+}
 
-      script.src =
-        `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&loading=async&callback=__kinTrackMapReady`;
+async function initMap() {
+  try {
+    await loadGoogleMaps();
 
-      script.async = true;
-      window.__kinTrackMapReady = resolve;
-
-      script.onerror = () => reject(
-        new Error('Google Maps failed to load. Check API key restrictions and billing.')
-      );
-
-      document.head.appendChild(script);
-
-      setTimeout(() => reject(
-        new Error('Google Maps loading timed out.')
-      ), 20000);
-    });
-
-    const mapElement = $('map');
+    const mapElement = $("map");
 
     if (!mapElement) {
-      console.warn('KinTrack: Map element #map was not found.');
+      console.warn("KinTrack: Map element #map was not found.");
       return;
     }
 
     state.map = new google.maps.Map(mapElement, {
-      center: { lat: -1.286389, lng: 36.817223 },
+      center: {
+        lat: -1.286389,
+        lng: 36.817223
+      },
+
       zoom: 11,
+
+      mapTypeId: "hybrid",
+
+      mapTypeControl: true,
+
+      mapTypeControlOptions: {
+        style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
+        position: google.maps.ControlPosition.TOP_RIGHT,
+
+        mapTypeIds: [
+          "roadmap",
+          "satellite",
+          "hybrid",
+          "terrain"
+        ]
+      },
+
       streetViewControl: false,
-      mapTypeControl: false,
       fullscreenControl: true,
-      clickableIcons: false
+      clickableIcons: false,
+      gestureHandling: "greedy"
     });
 
+    state.mapReady = true;
+
     say(
-      'mapStatus',
-      'Map ready. Locations appear only after participants consent.'
+      "mapStatus",
+      "Map ready. Locations appear only after participants consent."
     );
 
     drawLocations(state.activeLocations);
 
   } catch (error) {
-    reportError('mapStatus', error);
+    reportError("mapStatus", error);
   }
+}
+
+
+/* =============================================================
+   10. MAP MARKERS AND PARTICIPANT DISPLAY
+============================================================= */
+
+function validCoordinates(data) {
+  return (
+    Number.isFinite(data?.lat) &&
+    Number.isFinite(data?.lng) &&
+    data.lat >= -90 &&
+    data.lat <= 90 &&
+    data.lng >= -180 &&
+    data.lng <= 180
+  );
+}
+
+function createParticipantRow(uid, position) {
+  const row = document.createElement("div");
+  row.className = "person";
+
+  const info = document.createElement("div");
+  const name = document.createElement("strong");
+  const meta = document.createElement("small");
+
+  name.textContent =
+    position.displayName ||
+    (uid === state.user?.uid ? "You" : "Participant");
+
+  const accuracy = Number.isFinite(position.accuracy)
+    ? Math.round(position.accuracy)
+    : null;
+
+  const timestamp = position.updatedAt?.toDate
+    ? position.updatedAt.toDate()
+    : null;
+
+  meta.textContent =
+    `Location shared · accuracy ${
+      accuracy === null ? "unknown" : "±" + accuracy + " m"
+    } · updated ${
+      timestamp ? timestamp.toLocaleTimeString() : "recently"
+    }`;
+
+  info.append(name, meta);
+
+  const tag = document.createElement("span");
+  tag.className = "tag";
+  tag.textContent =
+    uid === state.user?.uid ? "You" : "Consented";
+
+  row.append(info, tag);
+
+  return row;
 }
 
 function drawLocations(locations) {
   state.activeLocations = locations;
 
+  // Remove markers for participants who are no longer active.
   for (const [uid, marker] of state.markers) {
     if (!locations.has(uid)) {
       marker.setMap(null);
@@ -556,8 +803,14 @@ function drawLocations(locations) {
     }
   }
 
+  const bounds = state.mapReady
+    ? new google.maps.LatLngBounds()
+    : null;
+
   for (const [uid, position] of locations) {
-    if (!state.map || !window.google?.maps) continue;
+    if (!validCoordinates(position)) continue;
+
+    if (!state.mapReady || !state.map) continue;
 
     const coordinates = {
       lat: position.lat,
@@ -570,7 +823,9 @@ function drawLocations(locations) {
       marker = new google.maps.Marker({
         map: state.map,
         position: coordinates,
-        title: position.displayName || 'Consenting participant'
+        title:
+          position.displayName ||
+          "Consenting participant"
       });
 
       state.markers.set(uid, marker);
@@ -579,83 +834,110 @@ function drawLocations(locations) {
       marker.setPosition(coordinates);
     }
 
-    if (uid === state.user?.uid) {
-      state.map.panTo(coordinates);
+    if (bounds) bounds.extend(coordinates);
+  }
+
+  // Fit the map to participants without constantly zooming
+  // or moving it on every small GPS update.
+  const now = Date.now();
+
+  if (
+    bounds &&
+    !bounds.isEmpty() &&
+    now - state.lastMapBoundsUpdate > 15000
+  ) {
+    if (locations.size > 1) {
+      state.map.fitBounds(bounds, 65);
+    } else if (locations.size === 1) {
+      state.map.setCenter(bounds.getCenter());
+      state.map.setZoom(15);
     }
+
+    state.lastMapBoundsUpdate = now;
   }
 
-  if (state.map && locations.size === 1) {
-    const position = [...locations.values()][0];
-
-    state.map.setCenter({
-      lat: position.lat,
-      lng: position.lng
-    });
-  }
-
-  const list = $('peopleList');
+  const list = $("peopleList");
 
   if (list) {
     list.replaceChildren();
 
     if (!locations.size) {
-      const paragraph = document.createElement('p');
+      const paragraph = document.createElement("p");
       paragraph.textContent =
-        'No active location is being shared in this session.';
+        "No active location is being shared in this session.";
+
       list.append(paragraph);
 
     } else {
       for (const [uid, position] of locations) {
-        const row = document.createElement('div');
-        row.className = 'person';
-
-        const left = document.createElement('div');
-        const name = document.createElement('strong');
-        const meta = document.createElement('small');
-
-        name.textContent =
-          position.displayName ||
-          (uid === state.user?.uid ? 'You' : 'Participant');
-
-        meta.textContent =
-          `Location shared · accuracy ±${Math.round(position.accuracy || 0)} m · updated ${
-            position.updatedAt?.toDate
-              ? position.updatedAt.toDate().toLocaleTimeString()
-              : 'just now'
-          }`;
-
-        left.append(name, meta);
-
-        const tag = document.createElement('span');
-        tag.className = 'tag';
-        tag.textContent =
-          uid === state.user?.uid ? 'You' : 'Consented';
-
-        row.append(left, tag);
-        list.append(row);
+        list.append(
+          createParticipantRow(uid, position)
+        );
       }
     }
   }
 
-  say('peopleCount', String(locations.size));
-  say('consentCount', String(locations.size));
+  say("peopleCount", String(locations.size));
+  say("consentCount", String(locations.size));
 
   say(
-    'mapBadge',
-    locations.size ? 'Live consenting members' : 'Waiting for consent'
+    "mapBadge",
+    locations.size
+      ? "Live consenting members"
+      : "Waiting for consent"
   );
+
+  if (!locations.size) {
+    say(
+      "mapStatus",
+      state.shareId
+        ? "Connected to the session. Waiting for active location sharing."
+        : "Create or join a session to view consenting participants."
+    );
+  }
 }
 
 
 /* =============================================================
-   7. FIRESTORE SUBSCRIPTIONS
+   11. FIRESTORE SUBSCRIPTIONS
 ============================================================= */
 
 function clearSubscriptions() {
-  state.unsubscribers.forEach(unsubscribe => unsubscribe());
+  state.unsubscribers.forEach(unsubscribe => {
+    try {
+      unsubscribe();
+    } catch (error) {
+      console.warn("Subscription cleanup:", error);
+    }
+  });
+
   state.unsubscribers = [];
 
-  state.shareUnsubscribers.forEach(unsubscribe => unsubscribe());
+  state.shareUnsubscribers.forEach(unsubscribe => {
+    try {
+      unsubscribe();
+    } catch (error) {
+      console.warn("Share subscription cleanup:", error);
+    }
+  });
+
+  state.shareUnsubscribers = [];
+
+  if (state.locationUnsub) {
+    state.locationUnsub();
+    state.locationUnsub = null;
+  }
+}
+
+function stopShareListeners() {
+  state.shareUnsubscribers.forEach(unsubscribe => {
+    try {
+      unsubscribe();
+    } catch (error) {
+      console.warn(error);
+    }
+  });
+
   state.shareUnsubscribers = [];
 
   if (state.locationUnsub) {
@@ -665,48 +947,51 @@ function clearSubscriptions() {
 }
 
 function watchShare(shareId) {
-  state.shareUnsubscribers.forEach(unsubscribe => unsubscribe());
-  state.shareUnsubscribers = [];
+  stopShareListeners();
 
-  if (state.locationUnsub) {
-    state.locationUnsub();
-    state.locationUnsub = null;
-  }
+  if (!shareId || !state.user) return;
 
   state.shareId = shareId;
-  sessionStorage.setItem('ktShareId', shareId);
+
+  sessionStorage.setItem("ktShareId", shareId);
 
   const membersRef = collection(
     db,
-    'shares',
+    "shares",
     shareId,
-    'members'
+    "members"
   );
 
   const unsubscribeMembers = onSnapshot(
     membersRef,
 
     snapshot => {
-      const active = snapshot.docs
-        .filter(document => document.data().active === true)
-        .map(document => document.id);
+      const active = new Set();
+      const names = new Map();
 
-      const names = new Map(
-        snapshot.docs.map(document => [
+      snapshot.docs.forEach(document => {
+        const data = document.data();
+
+        if (data.active === true) {
+          active.add(document.id);
+        }
+
+        names.set(
           document.id,
-          document.data().displayName || 'Participant'
-        ])
-      );
+          data.displayName || "Participant"
+        );
+      });
 
       if (state.locationUnsub) {
         state.locationUnsub();
+        state.locationUnsub = null;
       }
 
       const locationsRef = collection(
         db,
-        'shares',
+        "shares",
         shareId,
-        'locations'
+        "locations"
       );
 
       state.locationUnsub = onSnapshot(
@@ -719,13 +1004,13 @@ function watchShare(shareId) {
             const data = document.data();
 
             if (
-              active.includes(document.id) &&
-              Number.isFinite(data.lat) &&
-              Number.isFinite(data.lng)
+              active.has(document.id) &&
+              validCoordinates(data)
             ) {
               result.set(document.id, {
                 ...data,
-                displayName: names.get(document.id) || 'Participant'
+                displayName:
+                  names.get(document.id) || "Participant"
               });
             }
           });
@@ -734,31 +1019,35 @@ function watchShare(shareId) {
         },
 
         error => {
-          reportError('mapStatus', error, 'Location listener failed');
+          reportError(
+            "mapStatus",
+            error,
+            "Location listener failed"
+          );
         }
       );
     },
 
     error => {
-      reportError('mapStatus', error, 'Member listener failed');
+      reportError(
+        "mapStatus",
+        error,
+        "Member listener failed"
+      );
     }
   );
 
   state.shareUnsubscribers.push(unsubscribeMembers);
 
-  state.shareUnsubscribers.push(() => {
-    if (state.locationUnsub) {
-      state.locationUnsub();
-      state.locationUnsub = null;
-    }
-  });
-
-  say('mapStatus', 'Connected to the consent-controlled sharing session.');
+  say(
+    "mapStatus",
+    "Connected to the consent-controlled sharing session."
+  );
 }
 
 
 /* =============================================================
-   8. SESSION RESTORATION
+   12. SESSION RESTORATION
 ============================================================= */
 
 async function restoreSharingSession(user) {
@@ -767,11 +1056,17 @@ async function restoreSharingSession(user) {
   const savedShareId = state.shareId;
 
   try {
-    say('mapStatus', 'Restoring your sharing session…');
+    say("mapStatus", "Restoring your sharing session…");
 
     const member = await readServerDocument(
-      doc(db, 'shares', savedShareId, 'members', user.uid),
-      'session restoration membership verification'
+      doc(
+        db,
+        "shares",
+        savedShareId,
+        "members",
+        user.uid
+      ),
+      "session restoration membership verification"
     );
 
     if (
@@ -780,112 +1075,150 @@ async function restoreSharingSession(user) {
     ) {
       watchShare(savedShareId);
 
-      say('mapStatus', 'Your sharing session has been restored.');
+      say(
+        "mapStatus",
+        "Your sharing session has been restored."
+      );
+
       return;
     }
 
-    state.shareId = '';
-    sessionStorage.removeItem('ktShareId');
+    state.shareId = "";
+    sessionStorage.removeItem("ktShareId");
+
+    stopShareListeners();
+    drawLocations(new Map());
 
     say(
-      'mapStatus',
-      'Your previous sharing membership is no longer active. Create or join another session.'
+      "mapStatus",
+      "Your previous sharing membership is no longer active. Create or join another session."
     );
 
   } catch (error) {
-    console.error('KINTRACK_SESSION_RESTORE_FAILED', {
+    console.error("KINTRACK_SESSION_RESTORE_FAILED", {
       shareId: savedShareId,
       uid: user.uid,
-      code: error?.code || 'unknown',
+      code: error?.code || "unknown",
       message: error?.message || String(error),
       online: navigator.onLine
     });
 
-    // Preserve the ID when the network fails.
-    // Never discard a potentially valid session because of a timeout.
+    // Keep the session ID if the connection failed.
+    // Do not incorrectly delete a potentially valid session.
     state.shareId = savedShareId;
 
     say(
-      'mapStatus',
-      'Could not restore your session connection. Your session ID is saved. Check your connection and retry.'
+      "mapStatus",
+      "Could not restore the session connection. Your session ID is saved. Check your connection and retry."
     );
   }
 }
 
 
 /* =============================================================
-   9. LOCATION SHARING
+   13. LOCATION SHARING
 ============================================================= */
 
 async function startLocation() {
   if (state.locationStarting) return;
 
   if (!state.user) {
-    showAuth('login');
+    showAuth("login");
     return;
   }
 
   if (!state.shareId) {
     say(
-      'locationStatus',
-      'Create a sharing invite or join an existing session first.'
+      "locationStatus",
+      "Create a sharing invite or join an existing session first."
     );
 
-    setTab('consent');
+    setTab("consent");
     return;
   }
 
-  if (!$('locConsent')?.checked) {
+  if (!$("locConsent")?.checked) {
     say(
-      'locationStatus',
-      'Please read and accept the location consent first.'
+      "locationStatus",
+      "Please read and accept the location consent first."
     );
 
-    setTab('consent');
+    setTab("consent");
     return;
   }
 
   if (!navigator.geolocation) {
     say(
-      'locationStatus',
-      'This browser does not support location services.'
+      "locationStatus",
+      "This browser does not support location services."
+    );
+    return;
+  }
+
+  if (!window.isSecureContext) {
+    say(
+      "locationStatus",
+      "Location sharing requires HTTPS. Open the secure KinTrack website."
     );
     return;
   }
 
   if (!navigator.onLine) {
     say(
-      'locationStatus',
-      'You are offline. Reconnect before starting location sharing.'
+      "locationStatus",
+      "You are offline. Reconnect before starting location sharing."
     );
     return;
   }
 
-  const duration = Number($('duration')?.value || 30);
+  const duration = Number(
+    $("duration")?.value || 60
+  );
 
-  if (!Number.isFinite(duration) || duration <= 0) {
-    say('locationStatus', 'Select a valid sharing duration.');
+  if (
+    !Number.isFinite(duration) ||
+    duration <= 0 ||
+    duration > 1440
+  ) {
+    say("locationStatus", "Select a valid sharing duration.");
     return;
   }
 
   state.locationStarting = true;
-  say('locationStatus', 'Checking your sharing session…');
+
+  setButtonBusy(
+    "consentShareBtn",
+    true,
+    "Starting sharing…"
+  );
+
+  say(
+    "locationStatus",
+    "Checking your sharing session…"
+  );
 
   try {
     const member = await readServerDocument(
-      doc(db, 'shares', state.shareId, 'members', state.user.uid),
-      'startLocation membership verification'
+      doc(
+        db,
+        "shares",
+        state.shareId,
+        "members",
+        state.user.uid
+      ),
+      "location sharing membership verification"
     );
 
     if (!member.exists() || member.data().active !== true) {
-      say(
-        'locationStatus',
-        'Your session membership is not active. Create a new invite or join an active session.'
+      throw new Error(
+        "Your session membership is not active. Create a new invite or join an active session."
       );
-      return;
     }
 
-    say('locationStatus', 'Requesting browser location permission…');
+    say(
+      "locationStatus",
+      "Requesting browser location permission…"
+    );
 
     navigator.geolocation.getCurrentPosition(
       async position => {
@@ -893,25 +1226,43 @@ async function startLocation() {
           await writePosition(position);
 
           if (state.watchId !== null) {
-            navigator.geolocation.clearWatch(state.watchId);
+            navigator.geolocation.clearWatch(
+              state.watchId
+            );
           }
 
           state.watchId = navigator.geolocation.watchPosition(
             position => {
               writePosition(position).catch(error => {
-                console.error('Location update failed:', error);
+                console.error(
+                  "Location update failed:",
+                  error
+                );
 
                 say(
-                  'locationStatus',
-                  'Location update failed: ' + friendlyError(error)
+                  "locationStatus",
+                  "Location update failed: " +
+                  friendlyError(error)
                 );
               });
             },
 
             error => {
+              let message = error.message;
+
+              if (error.code === error.PERMISSION_DENIED) {
+                message = "Location permission was denied.";
+              } else if (
+                error.code === error.POSITION_UNAVAILABLE
+              ) {
+                message = "Your device could not determine its location.";
+              } else if (error.code === error.TIMEOUT) {
+                message = "GPS request timed out. Try again outdoors.";
+              }
+
               say(
-                'locationStatus',
-                'Location update error: ' + error.message
+                "locationStatus",
+                "Location update stopped: " + message
               );
             },
 
@@ -934,24 +1285,29 @@ async function startLocation() {
           );
 
           say(
-            'locationStatus',
+            "locationStatus",
             `Sharing is on until ${expiry.toLocaleTimeString()}. Keep this page open for live updates.`
           );
 
           logActivity(
-            'Location sharing started',
+            "Location sharing started",
             `Consent recorded for ${duration} minutes.`
           );
 
         } catch (error) {
           reportError(
-            'locationStatus',
+            "locationStatus",
             error,
-            'Could not save location'
+            "Could not save location"
           );
 
         } finally {
           state.locationStarting = false;
+
+          setButtonBusy(
+            "consentShareBtn",
+            false
+          );
         }
       },
 
@@ -960,19 +1316,30 @@ async function startLocation() {
 
         if (error.code === error.PERMISSION_DENIED) {
           message =
-            'Location permission denied. Enable location permission in your browser.';
+            "Location permission denied. Enable location permission in your browser.";
 
-        } else if (error.code === error.POSITION_UNAVAILABLE) {
+        } else if (
+          error.code === error.POSITION_UNAVAILABLE
+        ) {
           message =
-            'Your device could not determine its current location.';
+            "Your device could not determine its current location.";
 
         } else if (error.code === error.TIMEOUT) {
           message =
-            'Location request timed out. Try again with better GPS reception.';
+            "Location request timed out. Try again with better GPS reception.";
         }
 
-        say('locationStatus', 'Location was not shared: ' + message);
+        say(
+          "locationStatus",
+          "Location was not shared: " + message
+        );
+
         state.locationStarting = false;
+
+        setButtonBusy(
+          "consentShareBtn",
+          false
+        );
       },
 
       {
@@ -984,41 +1351,58 @@ async function startLocation() {
 
   } catch (error) {
     reportError(
-      'locationStatus',
+      "locationStatus",
       error,
-      'Could not verify session'
+      "Could not verify session"
     );
 
     state.locationStarting = false;
+
+    setButtonBusy(
+      "consentShareBtn",
+      false
+    );
   }
 }
+
+
+/* =============================================================
+   14. WRITE LOCATION TO FIRESTORE
+============================================================= */
 
 async function writePosition(position) {
   if (!state.user || !state.shareId) {
     throw new Error(
-      'You are not connected to a sharing session.'
+      "You are not connected to a sharing session."
     );
   }
 
   if (!navigator.onLine) {
     throw new Error(
-      'The device is offline. Location was not uploaded.'
+      "The device is offline. Location was not uploaded."
     );
   }
 
   const member = await readServerDocument(
-    doc(db, 'shares', state.shareId, 'members', state.user.uid),
-    'location update membership verification'
+    doc(
+      db,
+      "shares",
+      state.shareId,
+      "members",
+      state.user.uid
+    ),
+    "location update membership verification"
   );
 
   if (!member.exists() || member.data().active !== true) {
     throw new Error(
-      'Your consent is no longer active. Create or join a new session.'
+      "Your consent is no longer active. Create or join a new session."
     );
   }
 
   const latitude = position.coords.latitude;
   const longitude = position.coords.longitude;
+  const accuracy = position.coords.accuracy || 0;
 
   if (
     !Number.isFinite(latitude) ||
@@ -1028,34 +1412,38 @@ async function writePosition(position) {
     longitude < -180 ||
     longitude > 180
   ) {
-    throw new Error('Invalid GPS coordinates received.');
+    throw new Error("Invalid GPS coordinates received.");
   }
 
   const locationData = {
     uid: state.user.uid,
     lat: latitude,
     lng: longitude,
-    accuracy: Math.max(0, position.coords.accuracy || 0),
+    accuracy: Math.max(0, accuracy),
     updatedAt: serverTimestamp()
   };
 
   await setDoc(
     doc(
       db,
-      'shares',
+      "shares",
       state.shareId,
-      'locations',
+      "locations",
       state.user.uid
     ),
     locationData
   );
 
-  state.currentPosition = locationData;
+  state.currentPosition = {
+    lat: latitude,
+    lng: longitude,
+    accuracy
+  };
 }
 
 
 /* =============================================================
-   10. STOP LOCATION SHARING
+   15. STOP LOCATION SHARING
 ============================================================= */
 
 async function stopLocationWatch(callBackend = true) {
@@ -1067,78 +1455,96 @@ async function stopLocationWatch(callBackend = true) {
   clearTimeout(state.expiryTimer);
   state.expiryTimer = null;
 
-  if (callBackend && state.user && state.shareId) {
+  const user = state.user;
+  const shareId = state.shareId;
+
+  // Stop local GPS immediately, even if the network is unavailable.
+  state.currentPosition = null;
+
+  if (callBackend && user && shareId && functions) {
     try {
-      await httpsCallable(functions, 'stopSharing')({
-        shareId: state.shareId
+      await httpsCallable(
+        functions,
+        "stopSharing"
+      )({
+        shareId
       });
 
     } catch (error) {
-      console.error('Backend stop-sharing request failed:', error);
+      console.error(
+        "Backend stop-sharing request failed:",
+        error
+      );
 
       say(
-        'locationStatus',
-        'Local tracking stopped. Server confirmation failed: ' +
+        "locationStatus",
+        "Local GPS stopped. Server confirmation failed: " +
         friendlyError(error)
       );
     }
   }
 
-  if (state.user && state.shareId) {
+  if (user && shareId && db) {
     try {
       await deleteDoc(
         doc(
           db,
-          'shares',
-          state.shareId,
-          'locations',
-          state.user.uid
+          "shares",
+          shareId,
+          "locations",
+          user.uid
         )
       );
 
     } catch (error) {
-      console.error('Location deletion failed:', error);
+      console.error(
+        "Location deletion failed:",
+        error
+      );
     }
   }
 
-  if ($('locConsent')) {
-    $('locConsent').checked = false;
+  if ($("locConsent")) {
+    $("locConsent").checked = false;
   }
 
-  say('locationStatus', 'Location sharing is off.');
+  say(
+    "locationStatus",
+    "Location sharing is off. Local GPS updates have stopped."
+  );
 
   logActivity(
-    'Location sharing stopped',
-    'Location updates disabled.'
+    "Location sharing stopped",
+    "Location updates disabled."
   );
 }
 
-$('locBtn')?.addEventListener('click', startLocation);
-$('consentShareBtn')?.addEventListener('click', startLocation);
+$("locBtn")?.addEventListener("click", startLocation);
+$("consentShareBtn")?.addEventListener("click", startLocation);
 
-$('stopLocBtn')?.addEventListener('click', () => {
+$("stopLocBtn")?.addEventListener("click", () => {
   stopLocationWatch(true);
 });
 
-$('stopAllBtn')?.addEventListener('click', () => {
+$("stopAllBtn")?.addEventListener("click", () => {
   stopLocationWatch(true);
 });
 
 
 /* =============================================================
-   11. INVITATION LINKS AND SHARING
+   16. INVITATION LINKS AND SHARING
 ============================================================= */
 
 function currentInviteUrl() {
   const code =
     state.inviteCode ||
-    $('inviteLink')?.value?.trim() ||
-    '';
+    $("inviteLink")?.value?.trim() ||
+    "";
 
   const url = new URL(window.location.href);
 
   if (code) {
-    url.searchParams.set('invite', code);
+    url.searchParams.set("invite", code);
   }
 
   return {
@@ -1150,15 +1556,40 @@ function currentInviteUrl() {
 function shareText() {
   const invitation = currentInviteUrl();
 
-  return `Join my KinTrack sharing session with invite code ${invitation.code}. Open the link, sign in, and review the invitation: ${invitation.url}
-Only share if you trust the sender. Location remains off until you separately consent.`;
+  return (
+    `Join my KinTrack sharing session with invite code ${invitation.code}. ` +
+    `Open the link, sign in, and review the invitation: ${invitation.url}\n` +
+    "Only share if you trust the sender. Location remains off until you separately consent."
+  );
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+
+  } catch (error) {
+    const input = document.createElement("textarea");
+
+    input.value = text;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+
+    document.body.append(input);
+    input.select();
+
+    const copied = document.execCommand("copy");
+    input.remove();
+
+    return copied;
+  }
 }
 
 function openShareTarget(target) {
   const invitation = currentInviteUrl();
 
   if (!invitation.code) {
-    say('pairStatus', 'Create an invite first.');
+    say("pairStatus", "Create an invite first.");
     return;
   }
 
@@ -1172,74 +1603,83 @@ function openShareTarget(target) {
       `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(invitation.url)}`,
 
     x:
-      `https://twitter.com/intent/tweet?text=${encodeURIComponent('KinTrack invite code: ' + invitation.code)}&url=${encodeURIComponent(invitation.url)}`,
+      `https://twitter.com/intent/tweet?text=${encodeURIComponent("KinTrack invite code: " + invitation.code)}&url=${encodeURIComponent(invitation.url)}`,
 
     telegram:
-      `https://t.me/share/url?url=${encodeURIComponent(invitation.url)}&text=${encodeURIComponent('KinTrack invite code: ' + invitation.code)}`,
+      `https://t.me/share/url?url=${encodeURIComponent(invitation.url)}&text=${encodeURIComponent("KinTrack invitation")}`,
 
     email:
-      `mailto:?subject=${encodeURIComponent('KinTrack invitation')}&body=${encoded}`,
+      `mailto:?subject=${encodeURIComponent("KinTrack invitation")}&body=${encoded}`,
 
     sms:
       `sms:?&body=${encoded}`,
 
     linkedin:
-      `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(invitation.url)}`,
-
-    reddit:
-      `https://www.reddit.com/submit?url=${encodeURIComponent(invitation.url)}&title=${encodeURIComponent('KinTrack invitation')}`
+      `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(invitation.url)}`
   };
 
-  if (target === 'copy') {
-    navigator.clipboard.writeText(text)
-      .then(() => say('contactStatus', 'Invite link and code copied.'))
-      .catch(() => say('contactStatus', 'Copy was blocked by your browser.'));
+  if (target === "copy") {
+    copyText(text).then(copied => {
+      say(
+        "contactStatus",
+        copied
+          ? "Invite link and code copied."
+          : "Copy was blocked by your browser."
+      );
+    });
 
     return;
   }
 
-  if (target === 'native' && navigator.share) {
+  if (target === "native" && navigator.share) {
     navigator.share({
-      title: 'KinTrack invitation',
+      title: "KinTrack invitation",
       text,
       url: invitation.url
-    }).catch(() => {});
+    }).catch(error => {
+      if (error.name !== "AbortError") {
+        console.warn("Native sharing failed:", error);
+      }
+    });
 
     return;
   }
 
   if (urls[target]) {
-    window.open(urls[target], '_blank', 'noopener,noreferrer');
+    window.open(
+      urls[target],
+      "_blank",
+      "noopener,noreferrer"
+    );
   }
 }
 
 function renderShareButtons() {
-  const box = $('inviteShareActions');
+  const box = $("inviteShareActions");
   if (!box) return;
 
   box.replaceChildren();
 
   const targets = [
-    ['WhatsApp', 'whatsapp'],
-    ['Facebook', 'facebook'],
-    ['X', 'x'],
-    ['Telegram', 'telegram'],
-    ['Email', 'email'],
-    ['SMS', 'sms'],
-    ['LinkedIn', 'linkedin'],
-    ['Reddit', 'reddit'],
-    ['Copy invite link', 'copy'],
-    ['More…', 'native']
+    ["WhatsApp", "whatsapp"],
+    ["Facebook", "facebook"],
+    ["X", "x"],
+    ["Telegram", "telegram"],
+    ["Email", "email"],
+    ["SMS", "sms"],
+    ["LinkedIn", "linkedin"],
+    ["Copy invite link", "copy"],
+    ["More…", "native"]
   ];
 
   for (const [label, target] of targets) {
-    const button = document.createElement('button');
+    const button = document.createElement("button");
 
-    button.type = 'button';
-    button.className = 'secondary';
+    button.type = "button";
+    button.className = "secondary";
     button.textContent = label;
 
-    button.addEventListener('click', () => {
+    button.addEventListener("click", () => {
       openShareTarget(target);
     });
 
@@ -1249,303 +1689,430 @@ function renderShareButtons() {
 
 renderShareButtons();
 
-$('shareInviteBtn')?.addEventListener('click', () => {
-  openShareTarget('native');
+$("shareInviteBtn")?.addEventListener("click", () => {
+  openShareTarget("native");
 });
 
 
 /* =============================================================
-   12. CONTACT PICKER
+   17. CONTACT PICKER
 ============================================================= */
 
-$('contactPickerBtn')?.addEventListener('click', async () => {
-  const status = $('contactPickerStatus');
+$("contactPickerBtn")?.addEventListener("click", async () => {
+  const status = $("contactPickerStatus");
 
   if (!state.inviteCode) {
-    if (status) status.textContent = 'Create an invite first.';
+    say("contactPickerStatus", "Create an invite first.");
     return;
   }
 
   if (!navigator.contacts?.select) {
-    if (status) {
-      status.textContent =
-        'This browser does not support Contact Picker. Use the invitation sharing buttons.';
-    }
+    say(
+      "contactPickerStatus",
+      "This browser does not support Contact Picker. Use the invitation sharing buttons."
+    );
     return;
   }
 
   try {
     const contacts = await navigator.contacts.select(
-      ['name', 'tel', 'email'],
+      ["name", "tel", "email"],
       { multiple: true }
     );
 
     if (!contacts.length) {
-      status.textContent = 'No contacts selected.';
+      say("contactPickerStatus", "No contacts selected.");
       return;
     }
+
+    say(
+      "contactPickerStatus",
+      `Selected ${contacts.length} contact(s). KinTrack has not uploaded or messaged them automatically.`
+    );
 
     const summary = contacts.map(contact => [
       ...(contact.name || []),
       ...(contact.tel || []),
       ...(contact.email || [])
-    ].join(' · ')).filter(Boolean).join('\n');
+    ].join(" · ")).filter(Boolean).join("\n");
 
-    status.textContent =
-      `Selected ${contacts.length} contact(s). KinTrack has not uploaded or messaged them automatically.`;
-
-    say('contactStatus', summary.slice(0, 500));
+    say("contactStatus", summary.slice(0, 500));
 
   } catch (error) {
     status.textContent =
-      error.name === 'AbortError'
-        ? 'Contact selection cancelled.'
-        : 'Contact picker unavailable. Use a sharing option instead.';
+      error.name === "AbortError"
+        ? "Contact selection cancelled."
+        : "Contact picker unavailable. Use a sharing option instead.";
   }
 });
 
 
 /* =============================================================
-   13. CREATE SHARING SESSION
+   18. CREATE SHARING SESSION
 ============================================================= */
 
-$('createShareBtn')?.addEventListener('click', async () => {
+$("createShareBtn")?.addEventListener("click", async () => {
   if (!state.user) {
-    showAuth('login');
+    showAuth("login");
     return;
   }
 
+  setButtonBusy(
+    "createShareBtn",
+    true,
+    "Creating invite…"
+  );
+
   try {
-    say('pairStatus', 'Creating secure sharing invitation…');
+    say(
+      "pairStatus",
+      "Creating secure sharing invitation…"
+    );
+
+    const durationMinutes = Number(
+      $("duration")?.value || 60
+    );
 
     const result = await httpsCallable(
       functions,
-      'createShare'
+      "createShare"
     )({
-      durationMinutes: Number($('duration')?.value || 30)
+      durationMinutes
     });
+
+    if (
+      !result.data?.shareId ||
+      !result.data?.inviteCode
+    ) {
+      throw new Error(
+        "The server returned an incomplete invitation."
+      );
+    }
 
     state.shareId = result.data.shareId;
     state.inviteCode = result.data.inviteCode;
 
     watchShare(state.shareId);
 
-    if ($('shareCodeBox')) {
-      $('shareCodeBox').classList.remove('hidden');
+    if ($("shareCodeBox")) {
+      $("shareCodeBox").classList.remove("hidden");
 
-      $('shareCodeBox').textContent =
-        `Invite code: ${state.inviteCode} · expires ${new Date(result.data.expiresAt).toLocaleString()}. Give this code only to your intended participant.`;
+      $("shareCodeBox").textContent =
+        `Invite code: ${state.inviteCode} · expires ${
+          new Date(result.data.expiresAt).toLocaleString()
+        }. Give this code only to your intended participant.`;
     }
 
-    if ($('inviteLink')) {
-      $('inviteLink').value = state.inviteCode;
+    if ($("inviteLink")) {
+      $("inviteLink").value = state.inviteCode;
     }
 
     renderShareButtons();
 
-    $('modalBack')?.classList.remove('hidden');
+    $("modalBack")?.classList.remove("hidden");
 
     say(
-      'pairStatus',
-      'Invite created. The recipient must sign in and accept it on their own device.'
+      "pairStatus",
+      "Invite created. The recipient must sign in and accept it on their own device."
     );
 
     logActivity(
-      'Sharing invite created',
-      'Secure invitation generated by the backend.'
+      "Sharing invite created",
+      "Secure invitation generated by the backend."
     );
 
   } catch (error) {
     reportError(
-      'pairStatus',
+      "pairStatus",
       error,
-      'Could not create invitation'
+      "Could not create invitation"
     );
+
+  } finally {
+    setButtonBusy("createShareBtn", false);
   }
 });
 
-$('inviteBtn')?.addEventListener('click', () => {
-  setTab('consent');
-  $('createShareBtn')?.focus();
+$("inviteBtn")?.addEventListener("click", () => {
+  setTab("consent");
+  $("createShareBtn")?.focus();
 });
 
 
 /* =============================================================
-   14. JOIN SHARING SESSION
+   19. JOIN SHARING SESSION
 ============================================================= */
 
-$('joinBtn')?.addEventListener('click', async () => {
+$("joinBtn")?.addEventListener("click", async () => {
   if (!state.user) {
-    showAuth('login');
+    showAuth("login");
     return;
   }
 
-  const code = $('joinCode')?.value.trim().toUpperCase() || '';
+  const code =
+    $("joinCode")?.value.trim().toUpperCase() || "";
 
   if (!/^[A-F0-9]{10}$/.test(code)) {
-    say('joinStatus', 'Enter the 10-character invitation code.');
+    say(
+      "joinStatus",
+      "Enter the 10-character invitation code."
+    );
     return;
   }
 
   const accepted = confirm(
-    'By joining, you consent to participate in this time-limited sharing session. Your location will NOT be shared until you separately enable it. Continue?'
+    "By joining, you agree to participate in this time-limited sharing session. Your location will NOT be shared until you separately enable it. Continue?"
   );
 
   if (!accepted) return;
 
+  setButtonBusy(
+    "joinBtn",
+    true,
+    "Joining…"
+  );
+
   try {
-    say('joinStatus', 'Validating invitation…');
+    say("joinStatus", "Validating invitation…");
 
     const result = await httpsCallable(
       functions,
-      'joinShare'
+      "joinShare"
     )({
       inviteCode: code
     });
 
-    watchShare(result.data.shareId);
+    if (!result.data?.shareId) {
+      throw new Error(
+        "The server did not return a valid sharing session."
+      );
+    }
+
+    state.shareId = result.data.shareId;
+
+    watchShare(state.shareId);
 
     say(
-      'joinStatus',
-      `Joined successfully. Session expires ${new Date(result.data.expiresAt).toLocaleString()}. Location sharing remains off until you enable it.`
+      "joinStatus",
+      `Joined successfully. Session expires ${
+        new Date(result.data.expiresAt).toLocaleString()
+      }. Location sharing remains off until you enable it.`
     );
 
     logActivity(
-      'Joined a sharing session',
-      'Participant consent was recorded.'
+      "Joined a sharing session",
+      "Participant consent was recorded."
     );
 
-    setTab('overview');
+    setTab("overview");
 
   } catch (error) {
-    reportError('joinStatus', error, 'Could not join session');
+    reportError(
+      "joinStatus",
+      error,
+      "Could not join session"
+    );
+
+  } finally {
+    setButtonBusy("joinBtn", false);
   }
 });
 
 
 /* =============================================================
-   15. INVITATION MODAL
+   20. INVITATION MODAL
 ============================================================= */
-
-$('copyInviteBtn')?.addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(
-      $('inviteLink').value
-    );
-
-    $('copyInviteBtn').textContent = 'Copied';
-
-  } catch (error) {
-    $('inviteLink')?.select();
-    document.execCommand('copy');
-  }
-});
 
 function closeModal() {
-  $('modalBack')?.classList.add('hidden');
+  $("modalBack")?.classList.add("hidden");
 }
 
-$('closeModal')?.addEventListener('click', closeModal);
-$('doneModal')?.addEventListener('click', closeModal);
+$("copyInviteBtn")?.addEventListener("click", async () => {
+  const code = $("inviteLink")?.value || "";
 
+  const copied = await copyText(code);
 
-/* =============================================================
-   16. ASSET MANAGEMENT
-============================================================= */
+  say(
+    "contactStatus",
+    copied ? "Invitation code copied." : "Copy failed."
+  );
 
-$('addAssetBtn')?.addEventListener('click', async () => {
-  if (!state.user) {
-    showAuth('login');
-    return;
+  if (copied) {
+    $("copyInviteBtn").textContent = "Copied";
   }
+});
 
-  const name = $('assetName')?.value.trim() || '';
-  const identifier = $('assetId')?.value.trim() || '';
+$("closeModal")?.addEventListener("click", closeModal);
+$("doneModal")?.addEventListener("click", closeModal);
 
-  if (!name || !identifier) {
-    alert('Enter an asset name and identifier.');
-    return;
-  }
-
-  try {
-    await addDoc(collection(db, 'assets'), {
-      ownerUid: state.user.uid,
-      name,
-      identifier,
-      createdAt: serverTimestamp()
-    });
-
-    $('assetName').value = '';
-    $('assetId').value = '';
-
-    if ($('assetModel')) $('assetModel').value = '';
-    if ($('assetServiceDate')) $('assetServiceDate').value = '';
-
-    logActivity('Asset added', name);
-
-  } catch (error) {
-    console.error('Asset creation failed:', error);
-    alert(friendlyError(error));
+$("modalBack")?.addEventListener("click", event => {
+  if (event.target === $("modalBack")) {
+    closeModal();
   }
 });
 
 
 /* =============================================================
-   17. LOAD AND DISPLAY ASSETS
+   21. ASSET MANAGEMENT
+============================================================= */
+
+$("addAssetBtn")?.addEventListener("click", async () => {
+  if (!state.user) {
+    showAuth("login");
+    return;
+  }
+
+  const name = safeText($("assetName")?.value);
+  const identifier = safeText($("assetId")?.value);
+  const type = safeText($("assetType")?.value, "other");
+  const model = safeText($("assetModel")?.value);
+  const serviceDate = safeText(
+    $("assetServiceDate")?.value
+  );
+
+  if (!name || !identifier) {
+    say(
+      "assetList",
+      "Enter an asset name and identifier."
+    );
+    return;
+  }
+
+  setButtonBusy(
+    "addAssetBtn",
+    true,
+    "Saving asset…"
+  );
+
+  try {
+    await addDoc(
+      collection(db, "assets"),
+      {
+        ownerUid: state.user.uid,
+
+        name,
+        identifier,
+
+        // Additional fields for the redesigned asset form.
+        // Existing fields remain unchanged.
+        type,
+        model,
+        serviceDate,
+
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      }
+    );
+
+    $("assetName").value = "";
+    $("assetId").value = "";
+
+    if ($("assetModel")) {
+      $("assetModel").value = "";
+    }
+
+    if ($("assetServiceDate")) {
+      $("assetServiceDate").value = "";
+    }
+
+    logActivity("Asset added", name);
+
+  } catch (error) {
+    reportError(
+      "assetList",
+      error,
+      "Asset creation failed"
+    );
+
+  } finally {
+    setButtonBusy("addAssetBtn", false);
+  }
+});
+
+
+/* =============================================================
+   22. LOAD AND DISPLAY ASSETS
 ============================================================= */
 
 function watchAssets(uid) {
   const assetsQuery = query(
-    collection(db, 'assets'),
-    where('ownerUid', '==', uid)
+    collection(db, "assets"),
+    where("ownerUid", "==", uid)
   );
 
   const unsubscribe = onSnapshot(
     assetsQuery,
 
     snapshot => {
-      const list = $('assetList');
+      const list = $("assetList");
       if (!list) return;
 
       list.replaceChildren();
 
-      say('assetCount', String(snapshot.size));
+      say("assetCount", String(snapshot.size));
 
       if (snapshot.empty) {
-        const paragraph = document.createElement('p');
-        paragraph.textContent = 'No assets registered yet.';
-        list.append(paragraph);
+        showEmptyList(
+          "assetList",
+          "No assets registered yet."
+        );
+        return;
       }
 
       snapshot.docs.forEach(document => {
         const asset = document.data();
 
-        const row = document.createElement('div');
-        row.className = 'person';
+        const row = document.createElement("div");
+        row.className = "person";
 
-        const info = document.createElement('div');
-        const name = document.createElement('strong');
-        const identifier = document.createElement('small');
+        const info = document.createElement("div");
 
-        name.textContent = asset.name || 'Unnamed asset';
-        identifier.textContent =
-          asset.identifier || 'No identifier';
+        const name = document.createElement("strong");
+        name.textContent = asset.name || "Unnamed asset";
 
-        info.append(name, identifier);
+        const details = document.createElement("small");
 
-        const removeButton = document.createElement('button');
-        removeButton.className = 'danger';
-        removeButton.textContent = 'Delete';
+        const parts = [
+          asset.identifier || "No identifier",
+          asset.type || "",
+          asset.model || "",
+          asset.serviceDate
+            ? "Next service: " + formatDate(asset.serviceDate)
+            : ""
+        ].filter(Boolean);
 
-        removeButton.addEventListener('click', async () => {
-          if (!confirm('Delete this asset?')) return;
+        details.textContent = parts.join(" · ");
+
+        info.append(name, details);
+
+        const removeButton = document.createElement("button");
+
+        removeButton.type = "button";
+        removeButton.className = "danger";
+        removeButton.textContent = "Delete";
+
+        removeButton.addEventListener("click", async () => {
+          if (!confirm(
+            `Delete the asset "${asset.name || "Unnamed asset"}"?`
+          )) {
+            return;
+          }
+
+          removeButton.disabled = true;
 
           try {
-            await deleteDoc(doc(db, 'assets', document.id));
-            logActivity('Asset deleted', asset.name);
+            await deleteDoc(
+              doc(db, "assets", document.id)
+            );
+
+            logActivity(
+              "Asset deleted",
+              asset.name || "Unnamed asset"
+            );
 
           } catch (error) {
             alert(friendlyError(error));
+            removeButton.disabled = false;
           }
         });
 
@@ -1555,7 +2122,11 @@ function watchAssets(uid) {
     },
 
     error => {
-      reportError('assetList', error, 'Could not load assets');
+      reportError(
+        "assetList",
+        error,
+        "Could not load assets"
+      );
     }
   );
 
@@ -1564,17 +2135,20 @@ function watchAssets(uid) {
 
 
 /* =============================================================
-   18. EXPORT ASSETS
+   23. EXPORT ASSETS
 ============================================================= */
 
-$('exportBtn')?.addEventListener('click', async () => {
-  if (!state.user) return;
+$("exportBtn")?.addEventListener("click", async () => {
+  if (!state.user) {
+    showAuth("login");
+    return;
+  }
 
   try {
     const snapshot = await getDocs(
       query(
-        collection(db, 'assets'),
-        where('ownerUid', '==', state.user.uid)
+        collection(db, "assets"),
+        where("ownerUid", "==", state.user.uid)
       )
     );
 
@@ -1582,8 +2156,12 @@ $('exportBtn')?.addEventListener('click', async () => {
       const asset = document.data();
 
       return {
-        name: asset.name || '',
-        identifier: asset.identifier || '',
+        id: document.id,
+        name: asset.name || "",
+        identifier: asset.identifier || "",
+        type: asset.type || "",
+        model: asset.model || "",
+        serviceDate: asset.serviceDate || "",
         createdAt:
           asset.createdAt?.toDate?.().toISOString() || null
       };
@@ -1591,37 +2169,48 @@ $('exportBtn')?.addEventListener('click', async () => {
 
     const blob = new Blob(
       [JSON.stringify(data, null, 2)],
-      { type: 'application/json' }
+      { type: "application/json" }
     );
 
     const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
+    const anchor = document.createElement("a");
 
     anchor.href = url;
-    anchor.download = 'kintrack-assets.json';
+    anchor.download = "kintrack-assets.json";
 
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
 
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    logActivity(
+      "Asset export completed",
+      `${data.length} asset record(s) exported.`
+    );
 
   } catch (error) {
-    console.error('Export failed:', error);
-    alert(friendlyError(error));
+    reportError(
+      "auditList",
+      error,
+      "Asset export failed"
+    );
   }
 });
 
 
 /* =============================================================
-   19. DELETE ALL ASSETS
+   24. DELETE ALL ASSETS
 ============================================================= */
 
-$('deleteBtn')?.addEventListener('click', async () => {
-  if (!state.user) return;
+$("deleteBtn")?.addEventListener("click", async () => {
+  if (!state.user) {
+    showAuth("login");
+    return;
+  }
 
   if (!confirm(
-    'Delete all your registered assets? This does not delete your account or payment history.'
+    "Delete all your registered assets? This does not delete your account or payment history."
   )) {
     return;
   }
@@ -1629,58 +2218,72 @@ $('deleteBtn')?.addEventListener('click', async () => {
   try {
     const snapshot = await getDocs(
       query(
-        collection(db, 'assets'),
-        where('ownerUid', '==', state.user.uid)
+        collection(db, "assets"),
+        where("ownerUid", "==", state.user.uid)
       )
     );
 
-    await Promise.all(
-      snapshot.docs.map(document =>
-        deleteDoc(doc(db, 'assets', document.id))
-      )
-    );
+    // Delete in manageable batches to avoid oversized requests.
+    for (let i = 0; i < snapshot.docs.length; i += 10) {
+      const batch = snapshot.docs.slice(i, i + 10);
+
+      await Promise.all(
+        batch.map(document =>
+          deleteDoc(doc(db, "assets", document.id))
+        )
+      );
+    }
 
     logActivity(
-      'Assets deleted',
-      'All registered assets removed.'
+      "Assets deleted",
+      "All registered assets removed."
     );
 
   } catch (error) {
-    console.error('Asset deletion failed:', error);
-    alert(friendlyError(error));
+    reportError(
+      "auditList",
+      error,
+      "Asset deletion failed"
+    );
   }
 });
 
 
 /* =============================================================
-   20. SUBSCRIPTION STATUS
+   25. SUBSCRIPTION MONITORING
 ============================================================= */
 
 function watchSubscription(uid) {
   const unsubscribe = onSnapshot(
-    doc(db, 'subscriptions', uid),
+    doc(db, "subscriptions", uid),
 
     snapshot => {
       if (snapshot.exists() && snapshot.data().active) {
+        const data = snapshot.data();
+
         const paidThrough =
-          snapshot.data().paidThrough?.toDate?.().toLocaleString() ||
-          'pending update';
+          data.paidThrough?.toDate?.().toLocaleString() ||
+          "pending update";
 
         say(
-          'trialState',
+          "trialState",
           `Active. Paid through ${paidThrough}.`
         );
 
       } else {
         say(
-          'trialState',
-          'No verified active subscription.'
+          "trialState",
+          "No verified active subscription."
         );
       }
     },
 
     error => {
-      reportError('trialState', error);
+      reportError(
+        "trialState",
+        error,
+        "Subscription status unavailable"
+      );
     }
   );
 
@@ -1689,112 +2292,168 @@ function watchSubscription(uid) {
 
 
 /* =============================================================
-   21. M-PESA CHECKOUT
+   26. M-PESA CHECKOUT
 ============================================================= */
 
-$('payBtn')?.addEventListener('click', async () => {
+$("payBtn")?.addEventListener("click", async () => {
   if (!state.user) {
-    showAuth('login');
+    showAuth("login");
     return;
   }
 
-  if (!$('payConfirm')?.checked) {
+  if (!$("payConfirm")?.checked) {
     say(
-      'payStatus',
-      'Confirm the price before starting checkout.'
+      "payStatus",
+      "Confirm the price before starting checkout."
     );
     return;
   }
 
-  const phone = $('phone')?.value.trim() || '';
+  const phone = $("phone")?.value.trim() || "";
 
   if (!/^((254[17]\d{8})|(0[17]\d{8})|([17]\d{8}))$/.test(phone)) {
     say(
-      'payStatus',
-      'Enter a valid Kenyan mobile number, e.g. 2547XXXXXXXX.'
+      "payStatus",
+      "Enter a valid Kenyan mobile number, e.g. 2547XXXXXXXX."
     );
     return;
   }
 
-  const button = $('payBtn');
-  if (button) button.disabled = true;
+  setButtonBusy(
+    "payBtn",
+    true,
+    "Requesting STK Push…"
+  );
 
-  say('payStatus', 'Requesting secure M-Pesa STK Push…');
+  say(
+    "payStatus",
+    "Requesting secure M-Pesa STK Push…"
+  );
 
   try {
     const result = await httpsCallable(
       functions,
-      'startMpesaPayment'
+      "startMpesaPayment"
     )({
       phone,
       confirmedPrice: 100
     });
 
     say(
-      'payStatus',
-      `${result.data.message || 'STK Push request accepted by the server.'} Check your phone for the M-Pesa prompt. Reference: ${result.data.paymentId}. Access will update only after server verification.`
+      "payStatus",
+      `${result.data.message || "STK Push request accepted by the server."} Check your phone for the M-Pesa prompt. Reference: ${result.data.paymentId || "pending"}. Access will update only after server verification.`
     );
 
     logActivity(
-      'M-Pesa checkout initiated',
-      result.data.paymentId
+      "M-Pesa checkout initiated",
+      result.data.paymentId || "Payment request submitted."
     );
 
   } catch (error) {
     reportError(
-      'payStatus',
+      "payStatus",
       error,
-      'Payment request failed'
+      "Payment request failed"
     );
 
   } finally {
-    if (button) button.disabled = false;
+    setButtonBusy("payBtn", false);
   }
 });
 
 
 /* =============================================================
-   22. APPLICATION INITIALIZATION
+   27. SESSION AND ACCOUNT INITIALIZATION
 ============================================================= */
+
+function showSignedOutState() {
+  $("authOverlay")?.classList.remove("hidden");
+
+  $("signOutBtn")?.classList.add("hidden");
+
+  if ($("accountBtn")) {
+    $("accountBtn").textContent = "Account";
+  }
+
+  say("trialBadge", "Sign in to continue");
+
+  showEmptyList(
+    "assetList",
+    "Sign in to load your assets."
+  );
+
+  showEmptyList(
+    "peopleList",
+    "Sign in and join a session to view participants."
+  );
+
+  say("assetCount", "0");
+  say("peopleCount", "0");
+  say("consentCount", "0");
+
+  say(
+    "trialState",
+    "Sign in to load subscription status."
+  );
+
+  say(
+    "auditList",
+    "Sign in to view available account information."
+  );
+
+  drawLocations(new Map());
+}
+
+function showSignedInState(user) {
+  $("authOverlay")?.classList.add("hidden");
+
+  $("signOutBtn")?.classList.remove("hidden");
+
+  if ($("accountBtn")) {
+    $("accountBtn").textContent =
+      user.displayName || user.email || "Account";
+  }
+
+  say("trialBadge", "Secure account connected");
+}
 
 function startApp() {
   const urlInvite = new URLSearchParams(
     window.location.search
-  ).get('invite');
+  ).get("invite");
 
   if (urlInvite && /^[A-F0-9]{10}$/i.test(urlInvite)) {
-    if ($('joinCode')) {
-      $('joinCode').value = urlInvite.toUpperCase();
+    if ($("joinCode")) {
+      $("joinCode").value = urlInvite.toUpperCase();
     }
 
     say(
-      'joinStatus',
-      'Invitation link detected. Sign in, then review and join this session.'
+      "joinStatus",
+      "Invitation link detected. Sign in, then review and join this session."
     );
   }
 
   if (
     !cfg.firebase ||
-    cfg.firebase.apiKey?.startsWith('REPLACE_')
+    !cfg.firebase.apiKey ||
+    cfg.firebase.apiKey.startsWith("REPLACE_")
   ) {
     say(
-      'authMessage',
-      'Configure firebase-config.js to connect KinTrack to Firebase.'
+      "authMessage",
+      "Configure firebase-config.js to connect KinTrack to Firebase."
     );
+
     return;
   }
 
   try {
     app = initializeApp(cfg.firebase);
+
     auth = getAuth(app);
 
     /*
-     * Firebase SDK 10.14.1:
-     * Auto-detect long polling where required.
-     * Disable fetch streams to improve compatibility
-     * with networks that interrupt Firestore streams.
-     *
-     * Initialize Firestore only once.
+     * Preserve the existing Firestore connection settings.
+     * Do not initialize Firestore more than once.
      */
     db = initializeFirestore(app, {
       experimentalAutoDetectLongPolling: true,
@@ -1803,10 +2462,11 @@ function startApp() {
 
     functions = getFunctions(
       app,
-      cfg.functionsRegion || 'africa-south1'
+      cfg.functionsRegion || "africa-south1"
     );
 
     updateNetworkStatus(navigator.onLine);
+
     initMap();
 
     onAuthStateChanged(auth, async user => {
@@ -1816,61 +2476,86 @@ function startApp() {
       clearSubscriptions();
 
       if (user) {
-        $('authOverlay')?.classList.add('hidden');
-
-        if ($('accountBtn')) {
-          $('accountBtn').textContent =
-            user.displayName || user.email || 'Account';
-        }
-
-        $('signOutBtn')?.classList.remove('hidden');
-
-        say('trialBadge', 'Secure account connected');
+        showSignedInState(user);
 
         watchAssets(user.uid);
         watchSubscription(user.uid);
 
         say(
-          'auditList',
-          'Security audit events are server-managed and are not exposed to this account.'
+          "auditList",
+          "Security audit events are managed by the server."
         );
 
         if (state.shareId) {
           await restoreSharingSession(user);
+        } else {
+          drawLocations(new Map());
         }
 
       } else {
-        $('authOverlay')?.classList.remove('hidden');
-        $('signOutBtn')?.classList.add('hidden');
-
-        if ($('accountBtn')) {
-          $('accountBtn').textContent = 'Account';
+        // Local tracking must stop when the account signs out.
+        if (state.watchId !== null) {
+          navigator.geolocation.clearWatch(state.watchId);
+          state.watchId = null;
         }
 
-        say('trialBadge', 'Sign in to continue');
+        clearTimeout(state.expiryTimer);
+        state.expiryTimer = null;
 
-        if ($('assetList')) {
-          $('assetList').innerHTML =
-            '<p>Sign in to load your assets.</p>';
-        }
+        state.shareId = "";
+        state.currentPosition = null;
 
-        drawLocations(new Map());
+        sessionStorage.removeItem("ktShareId");
+
+        stopShareListeners();
+
+        showSignedOutState();
       }
     });
 
   } catch (error) {
-    console.error('KinTrack initialization failed:', error);
+    console.error(
+      "KinTrack initialization failed:",
+      error
+    );
 
     say(
-      'authMessage',
-      'Firebase initialization failed: ' + friendlyError(error)
+      "authMessage",
+      "Firebase initialization failed: " + friendlyError(error)
     );
   }
 }
 
 
 /* =============================================================
-   23. START APPLICATION
+   28. PAGE LIFECYCLE SAFETY
+============================================================= */
+
+// Browser-only tracking is not guaranteed to continue when the
+// page is closed, suspended or the operating system kills it.
+// Do not falsely represent it as Android background tracking.
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && state.watchId !== null) {
+    console.info(
+      "KinTrack: Page is hidden. Browser GPS execution may be suspended."
+    );
+  }
+});
+
+window.addEventListener("pagehide", () => {
+  if (state.watchId !== null) {
+    navigator.geolocation.clearWatch(state.watchId);
+    state.watchId = null;
+  }
+
+  clearTimeout(state.expiryTimer);
+  state.expiryTimer = null;
+});
+
+
+/* =============================================================
+   29. START APPLICATION
 ============================================================= */
 
 startApp();
