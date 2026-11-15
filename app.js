@@ -7,19 +7,14 @@
  *
  * Includes:
  * - Firebase authentication
- * - Firestore long-polling transport
- * - Network reconnection handling
- * - Google Maps
- * - Consent-based location sharing
+ * - Firestore connection recovery and server reads
+ * - Session restoration
+ * - Consent-based GPS location sharing
+ * - Google Maps and live participant locations
  * - Sharing invitations and joining
- * - Live participant locations
- * - Asset management
- * - JSON export and deletion
+ * - Asset management, export and deletion
+ * - Subscription status
  * - M-Pesa checkout
- *
- * IMPORTANT:
- * Location sharing requires an active membership in a session.
- * The browser must remain open for continuous GPS updates.
  ***************************************************************/
 
 import { initializeApp } from
@@ -40,7 +35,7 @@ import {
   enableNetwork,
   doc,
   setDoc,
-  getDoc,
+  getDocFromServer,
   addDoc,
   collection,
   query,
@@ -60,11 +55,10 @@ import {
 
 
 /* =============================================================
-   1. CONFIGURATION AND APPLICATION STATE
+   1. CONFIGURATION AND STATE
 ============================================================= */
 
 const cfg = window.KINTRACK_CONFIG || {};
-
 const $ = id => document.getElementById(id);
 
 const state = {
@@ -88,7 +82,9 @@ const state = {
   activeLocations: new Map(),
   currentPosition: null,
 
-  networkOnline: navigator.onLine
+  networkOnline: navigator.onLine,
+  authReady: false,
+  locationStarting: false
 };
 
 let app;
@@ -106,16 +102,6 @@ function say(id, message) {
   if (element) element.textContent = message;
 }
 
-function htmlEscape(value) {
-  return String(value ?? '').replace(/[&<>"']/g, character => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
-  })[character]);
-}
-
 function logActivity(title, detail = '') {
   const activity = $('activity');
   if (!activity) return;
@@ -124,11 +110,10 @@ function logActivity(title, detail = '') {
   row.className = 'person';
 
   const left = document.createElement('div');
-
   const strong = document.createElement('strong');
-  strong.textContent = title;
-
   const small = document.createElement('small');
+
+  strong.textContent = title;
   small.textContent = detail || new Date().toLocaleString();
 
   left.append(strong, small);
@@ -164,12 +149,12 @@ document.querySelectorAll('[data-tab]').forEach(button => {
 
 
 /* =============================================================
-   3. ERROR HANDLING
+   3. ERROR HANDLING AND FIRESTORE RETRIES
 ============================================================= */
 
 function friendlyError(error) {
-  const code = error?.code || '';
-  const message = error?.message || '';
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '');
 
   const errors = {
     'auth/email-already-in-use':
@@ -206,9 +191,9 @@ function friendlyError(error) {
   if (errors[code]) return errors[code];
 
   if (
-    message.includes('ERR_CONNECTION_CLOSED') ||
-    message.includes('client is offline') ||
-    message.includes('Failed to get document because the client is offline')
+    message.toLowerCase().includes('err_connection_closed') ||
+    message.toLowerCase().includes('client is offline') ||
+    message.toLowerCase().includes('network')
   ) {
     return 'Firestore connection lost. Check your internet and retry.';
   }
@@ -221,13 +206,89 @@ function friendlyError(error) {
 }
 
 function reportError(target, error, prefix = '') {
-  console.error(prefix || 'KinTrack error:', error);
-  say(target, (prefix ? prefix + ': ' : '') + friendlyError(error));
+  console.error('KINTRACK_ERROR', {
+    operation: prefix || 'Application',
+    code: error?.code || 'unknown',
+    name: error?.name || 'Error',
+    message: error?.message || String(error),
+    online: navigator.onLine,
+    shareId: state.shareId || null,
+    uid: state.user?.uid || null
+  });
+
+  say(
+    target,
+    (prefix ? prefix + ': ' : '') + friendlyError(error)
+  );
+}
+
+function isRetryableFirestoreError(error) {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+
+  return [
+    'unavailable',
+    'deadline-exceeded',
+    'aborted',
+    'cancelled'
+  ].includes(code) ||
+    message.includes('err_connection_closed') ||
+    message.includes('client is offline') ||
+    message.includes('network');
+}
+
+/*
+ * Reads directly from the Firestore server.
+ * Retries temporary connection failures.
+ * Permission errors are NOT retried.
+ */
+async function readServerDocument(
+  reference,
+  operation = 'Firestore read',
+  attempts = 3
+) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await getDocFromServer(reference);
+
+    } catch (error) {
+      lastError = error;
+
+      console.error('KINTRACK_FIRESTORE_READ', {
+        operation,
+        attempt,
+        attempts,
+        code: error?.code || 'unknown',
+        message: error?.message || String(error),
+        online: navigator.onLine,
+        path: reference?.path || 'unknown'
+      });
+
+      if (
+        !isRetryableFirestoreError(error) ||
+        attempt === attempts
+      ) {
+        throw error;
+      }
+
+      await new Promise(resolve =>
+        setTimeout(resolve, 700 * attempt)
+      );
+
+      if (!navigator.onLine) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 
 /* =============================================================
-   4. NETWORK MONITORING AND FIRESTORE RECONNECTION
+   4. NETWORK MONITORING
 ============================================================= */
 
 function updateNetworkStatus(online) {
@@ -241,8 +302,10 @@ function updateNetworkStatus(online) {
   say('connectionStatus', message);
 
   if (!online) {
-    say('locationStatus',
-      'Connection lost. KinTrack will attempt to reconnect.');
+    say(
+      'locationStatus',
+      'Connection lost. KinTrack will attempt to reconnect.'
+    );
   }
 }
 
@@ -258,6 +321,11 @@ window.addEventListener('online', async () => {
   try {
     await enableNetwork(db);
     console.info('KinTrack: Firestore network restored.');
+
+    if (state.user && state.shareId) {
+      restoreSharingSession(state.user);
+    }
+
   } catch (error) {
     console.error('Firestore reconnection failed:', error);
   }
@@ -277,13 +345,17 @@ function showAuth(mode = 'register') {
 
   $('authOverlay')?.classList.remove('hidden');
 
-  say('authTitle',
-    mode === 'register' ? 'Join KinTrack' : 'Welcome back');
+  say(
+    'authTitle',
+    mode === 'register' ? 'Join KinTrack' : 'Welcome back'
+  );
 
-  say('authIntro',
+  say(
+    'authIntro',
     mode === 'register'
       ? 'Create an account to manage your assets and sharing preferences.'
-      : 'Sign in to access your account.');
+      : 'Sign in to access your account.'
+  );
 
   $('registerFields')?.classList.toggle(
     'hidden',
@@ -299,9 +371,6 @@ function showAuth(mode = 'register') {
     $('password').autocomplete =
       mode === 'register' ? 'new-password' : 'current-password';
   }
-
-  say('authSubmit',
-    mode === 'register' ? 'Create account' : 'Sign in');
 
   if ($('authSubmit')) {
     $('authSubmit').textContent =
@@ -326,8 +395,7 @@ $('authForm')?.addEventListener('submit', async event => {
   if (state.busy) return;
 
   if (!cfg.firebase || cfg.firebase.apiKey?.startsWith('REPLACE_')) {
-    say('authMessage',
-      'Configure firebase-config.js with your Firebase settings.');
+    say('authMessage', 'Configure firebase-config.js first.');
     return;
   }
 
@@ -338,16 +406,20 @@ $('authForm')?.addEventListener('submit', async event => {
   say('authMessage', 'Connecting securely…');
 
   try {
-    let credential;
-
     if (state.mode === 'register') {
       if (!$('termsConsent')?.checked) {
-        throw new Error('Please accept the account terms and privacy notice.');
+        throw new Error(
+          'Please accept the account terms and privacy notice.'
+        );
       }
 
       const name = $('fullName')?.value.trim();
 
-      credential = await createUserWithEmailAndPassword(
+      if (!name) {
+        throw new Error('Enter your full name.');
+      }
+
+      const credential = await createUserWithEmailAndPassword(
         auth,
         $('email').value.trim(),
         $('password').value
@@ -370,18 +442,8 @@ $('authForm')?.addEventListener('submit', async event => {
 
       say('authMessage', 'Account created successfully.');
 
-      setTimeout(() => {
-        if ($('authOverlay')?.classList.contains('hidden')) {
-          setTab('consent');
-          say(
-            'locationStatus',
-            'Account created. Review location consent before sharing.'
-          );
-        }
-      }, 250);
-
     } else {
-      credential = await signInWithEmailAndPassword(
+      await signInWithEmailAndPassword(
         auth,
         $('email').value.trim(),
         $('password').value
@@ -406,8 +468,12 @@ $('accountBtn')?.addEventListener('click', () => {
 });
 
 $('signOutBtn')?.addEventListener('click', async () => {
-  await stopLocationWatch(false);
-  await signOut(auth);
+  try {
+    await stopLocationWatch(false);
+    await signOut(auth);
+  } catch (error) {
+    reportError('authMessage', error, 'Sign out failed');
+  }
 });
 
 
@@ -419,8 +485,10 @@ async function initMap() {
   const key = cfg.mapsApiKey;
 
   if (!key || key.startsWith('REPLACE_')) {
-    say('mapStatus',
-      'Google Maps is not configured. Add your restricted browser key.');
+    say(
+      'mapStatus',
+      'Google Maps is not configured. Add your restricted browser key.'
+    );
     return;
   }
 
@@ -437,7 +505,6 @@ async function initMap() {
         `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&loading=async&callback=__kinTrackMapReady`;
 
       script.async = true;
-
       window.__kinTrackMapReady = resolve;
 
       script.onerror = () => reject(
@@ -459,10 +526,7 @@ async function initMap() {
     }
 
     state.map = new google.maps.Map(mapElement, {
-      center: {
-        lat: -1.286389,
-        lng: 36.817223
-      },
+      center: { lat: -1.286389, lng: 36.817223 },
       zoom: 11,
       streetViewControl: false,
       mapTypeControl: false,
@@ -470,8 +534,10 @@ async function initMap() {
       clickableIcons: false
     });
 
-    say('mapStatus',
-      'Map ready. Locations appear only after participants consent.');
+    say(
+      'mapStatus',
+      'Map ready. Locations appear only after participants consent.'
+    );
 
     drawLocations(state.activeLocations);
 
@@ -544,13 +610,12 @@ function drawLocations(locations) {
         row.className = 'person';
 
         const left = document.createElement('div');
-
         const name = document.createElement('strong');
+        const meta = document.createElement('small');
+
         name.textContent =
           position.displayName ||
           (uid === state.user?.uid ? 'You' : 'Participant');
-
-        const meta = document.createElement('small');
 
         meta.textContent =
           `Location shared · accuracy ±${Math.round(position.accuracy || 0)} m · updated ${
@@ -611,7 +676,12 @@ function watchShare(shareId) {
   state.shareId = shareId;
   sessionStorage.setItem('ktShareId', shareId);
 
-  const membersRef = collection(db, 'shares', shareId, 'members');
+  const membersRef = collection(
+    db,
+    'shares',
+    shareId,
+    'members'
+  );
 
   const unsubscribeMembers = onSnapshot(
     membersRef,
@@ -663,11 +733,15 @@ function watchShare(shareId) {
           drawLocations(result);
         },
 
-        error => reportError('mapStatus', error)
+        error => {
+          reportError('mapStatus', error, 'Location listener failed');
+        }
       );
     },
 
-    error => reportError('mapStatus', error)
+    error => {
+      reportError('mapStatus', error, 'Member listener failed');
+    }
   );
 
   state.shareUnsubscribers.push(unsubscribeMembers);
@@ -684,10 +758,68 @@ function watchShare(shareId) {
 
 
 /* =============================================================
-   8. LOCATION SHARING
+   8. SESSION RESTORATION
+============================================================= */
+
+async function restoreSharingSession(user) {
+  if (!user || !state.shareId || !navigator.onLine) return;
+
+  const savedShareId = state.shareId;
+
+  try {
+    say('mapStatus', 'Restoring your sharing session…');
+
+    const member = await readServerDocument(
+      doc(db, 'shares', savedShareId, 'members', user.uid),
+      'session restoration membership verification'
+    );
+
+    if (
+      member.exists() &&
+      member.data().active === true
+    ) {
+      watchShare(savedShareId);
+
+      say('mapStatus', 'Your sharing session has been restored.');
+      return;
+    }
+
+    state.shareId = '';
+    sessionStorage.removeItem('ktShareId');
+
+    say(
+      'mapStatus',
+      'Your previous sharing membership is no longer active. Create or join another session.'
+    );
+
+  } catch (error) {
+    console.error('KINTRACK_SESSION_RESTORE_FAILED', {
+      shareId: savedShareId,
+      uid: user.uid,
+      code: error?.code || 'unknown',
+      message: error?.message || String(error),
+      online: navigator.onLine
+    });
+
+    // Preserve the ID when the network fails.
+    // Never discard a potentially valid session because of a timeout.
+    state.shareId = savedShareId;
+
+    say(
+      'mapStatus',
+      'Could not restore your session connection. Your session ID is saved. Check your connection and retry.'
+    );
+  }
+}
+
+
+/* =============================================================
+   9. LOCATION SHARING
 ============================================================= */
 
 async function startLocation() {
+  if (state.locationStarting) return;
+
   if (!state.user) {
     showAuth('login');
     return;
@@ -714,14 +846,18 @@ async function startLocation() {
   }
 
   if (!navigator.geolocation) {
-    say('locationStatus',
-      'This browser does not support location services.');
+    say(
+      'locationStatus',
+      'This browser does not support location services.'
+    );
     return;
   }
 
   if (!navigator.onLine) {
-    say('locationStatus',
-      'You are offline. Reconnect before starting location sharing.');
+    say(
+      'locationStatus',
+      'You are offline. Reconnect before starting location sharing.'
+    );
     return;
   }
 
@@ -732,11 +868,13 @@ async function startLocation() {
     return;
   }
 
+  state.locationStarting = true;
   say('locationStatus', 'Checking your sharing session…');
 
   try {
-    const member = await getDoc(
-      doc(db, 'shares', state.shareId, 'members', state.user.uid)
+    const member = await readServerDocument(
+      doc(db, 'shares', state.shareId, 'members', state.user.uid),
+      'startLocation membership verification'
     );
 
     if (!member.exists() || member.data().active !== true) {
@@ -747,106 +885,130 @@ async function startLocation() {
       return;
     }
 
-  } catch (error) {
-    reportError('locationStatus', error, 'Could not verify session');
-    return;
-  }
+    say('locationStatus', 'Requesting browser location permission…');
 
-  say('locationStatus', 'Requesting browser location permission…');
+    navigator.geolocation.getCurrentPosition(
+      async position => {
+        try {
+          await writePosition(position);
 
-  navigator.geolocation.getCurrentPosition(
-    async position => {
-      try {
-        await writePosition(position);
+          if (state.watchId !== null) {
+            navigator.geolocation.clearWatch(state.watchId);
+          }
 
-        if (state.watchId !== null) {
-          navigator.geolocation.clearWatch(state.watchId);
-        }
+          state.watchId = navigator.geolocation.watchPosition(
+            position => {
+              writePosition(position).catch(error => {
+                console.error('Location update failed:', error);
 
-        state.watchId = navigator.geolocation.watchPosition(
-          position => {
-            writePosition(position).catch(error => {
-              console.error('Location update failed:', error);
+                say(
+                  'locationStatus',
+                  'Location update failed: ' + friendlyError(error)
+                );
+              });
+            },
 
+            error => {
               say(
                 'locationStatus',
-                'Location update failed: ' + friendlyError(error)
+                'Location update error: ' + error.message
               );
-            });
-          },
+            },
 
-          error => {
-            say(
-              'locationStatus',
-              'Location update error: ' + error.message
-            );
-          },
+            {
+              enableHighAccuracy: true,
+              maximumAge: 5000,
+              timeout: 20000
+            }
+          );
 
-          {
-            enableHighAccuracy: true,
-            maximumAge: 5000,
-            timeout: 20000
-          }
-        );
+          clearTimeout(state.expiryTimer);
 
-        clearTimeout(state.expiryTimer);
+          state.expiryTimer = setTimeout(
+            () => stopLocationWatch(true),
+            duration * 60000
+          );
 
-        state.expiryTimer = setTimeout(
-          () => stopLocationWatch(true),
-          duration * 60000
-        );
+          const expiry = new Date(
+            Date.now() + duration * 60000
+          );
 
-        const expiry = new Date(Date.now() + duration * 60000);
+          say(
+            'locationStatus',
+            `Sharing is on until ${expiry.toLocaleTimeString()}. Keep this page open for live updates.`
+          );
 
-        say(
-          'locationStatus',
-          `Sharing is on until ${expiry.toLocaleTimeString()}. Keep this page open for live updates.`
-        );
+          logActivity(
+            'Location sharing started',
+            `Consent recorded for ${duration} minutes.`
+          );
 
-        logActivity(
-          'Location sharing started',
-          `Consent recorded for ${duration} minutes.`
-        );
+        } catch (error) {
+          reportError(
+            'locationStatus',
+            error,
+            'Could not save location'
+          );
 
-      } catch (error) {
-        reportError('locationStatus', error, 'Could not save location');
+        } finally {
+          state.locationStarting = false;
+        }
+      },
+
+      error => {
+        let message = error.message;
+
+        if (error.code === error.PERMISSION_DENIED) {
+          message =
+            'Location permission denied. Enable location permission in your browser.';
+
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          message =
+            'Your device could not determine its current location.';
+
+        } else if (error.code === error.TIMEOUT) {
+          message =
+            'Location request timed out. Try again with better GPS reception.';
+        }
+
+        say('locationStatus', 'Location was not shared: ' + message);
+        state.locationStarting = false;
+      },
+
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 20000
       }
-    },
+    );
 
-    error => {
-      let message = error.message;
+  } catch (error) {
+    reportError(
+      'locationStatus',
+      error,
+      'Could not verify session'
+    );
 
-      if (error.code === error.PERMISSION_DENIED) {
-        message = 'Location permission denied. Enable location permission in your browser.';
-      } else if (error.code === error.POSITION_UNAVAILABLE) {
-        message = 'Your device could not determine its current location.';
-      } else if (error.code === error.TIMEOUT) {
-        message = 'Location request timed out. Try again in an area with better GPS reception.';
-      }
-
-      say('locationStatus', 'Location was not shared: ' + message);
-    },
-
-    {
-      enableHighAccuracy: true,
-      maximumAge: 0,
-      timeout: 20000
-    }
-  );
+    state.locationStarting = false;
+  }
 }
 
 async function writePosition(position) {
   if (!state.user || !state.shareId) {
-    throw new Error('You are not connected to a sharing session.');
+    throw new Error(
+      'You are not connected to a sharing session.'
+    );
   }
 
   if (!navigator.onLine) {
-    throw new Error('The device is offline. Location was not uploaded.');
+    throw new Error(
+      'The device is offline. Location was not uploaded.'
+    );
   }
 
-  // Confirm the user's active membership before every write.
-  const member = await getDoc(
-    doc(db, 'shares', state.shareId, 'members', state.user.uid)
+  const member = await readServerDocument(
+    doc(db, 'shares', state.shareId, 'members', state.user.uid),
+    'location update membership verification'
   );
 
   if (!member.exists() || member.data().active !== true) {
@@ -878,7 +1040,13 @@ async function writePosition(position) {
   };
 
   await setDoc(
-    doc(db, 'shares', state.shareId, 'locations', state.user.uid),
+    doc(
+      db,
+      'shares',
+      state.shareId,
+      'locations',
+      state.user.uid
+    ),
     locationData
   );
 
@@ -887,7 +1055,7 @@ async function writePosition(position) {
 
 
 /* =============================================================
-   9. STOP LOCATION SHARING
+   10. STOP LOCATION SHARING
 ============================================================= */
 
 async function stopLocationWatch(callBackend = true) {
@@ -907,6 +1075,7 @@ async function stopLocationWatch(callBackend = true) {
 
     } catch (error) {
       console.error('Backend stop-sharing request failed:', error);
+
       say(
         'locationStatus',
         'Local tracking stopped. Server confirmation failed: ' +
@@ -918,7 +1087,13 @@ async function stopLocationWatch(callBackend = true) {
   if (state.user && state.shareId) {
     try {
       await deleteDoc(
-        doc(db, 'shares', state.shareId, 'locations', state.user.uid)
+        doc(
+          db,
+          'shares',
+          state.shareId,
+          'locations',
+          state.user.uid
+        )
       );
 
     } catch (error) {
@@ -951,7 +1126,7 @@ $('stopAllBtn')?.addEventListener('click', () => {
 
 
 /* =============================================================
-   10. INVITATION LINKS AND SHARING
+   11. INVITATION LINKS AND SHARING
 ============================================================= */
 
 function currentInviteUrl() {
@@ -1080,7 +1255,7 @@ $('shareInviteBtn')?.addEventListener('click', () => {
 
 
 /* =============================================================
-   11. CONTACT PICKER
+   12. CONTACT PICKER
 ============================================================= */
 
 $('contactPickerBtn')?.addEventListener('click', async () => {
@@ -1131,7 +1306,7 @@ $('contactPickerBtn')?.addEventListener('click', async () => {
 
 
 /* =============================================================
-   12. CREATE SHARING SESSION
+   13. CREATE SHARING SESSION
 ============================================================= */
 
 $('createShareBtn')?.addEventListener('click', async () => {
@@ -1181,7 +1356,11 @@ $('createShareBtn')?.addEventListener('click', async () => {
     );
 
   } catch (error) {
-    reportError('pairStatus', error, 'Could not create invitation');
+    reportError(
+      'pairStatus',
+      error,
+      'Could not create invitation'
+    );
   }
 });
 
@@ -1192,7 +1371,7 @@ $('inviteBtn')?.addEventListener('click', () => {
 
 
 /* =============================================================
-   13. JOIN SHARING SESSION
+   14. JOIN SHARING SESSION
 ============================================================= */
 
 $('joinBtn')?.addEventListener('click', async () => {
@@ -1245,12 +1424,14 @@ $('joinBtn')?.addEventListener('click', async () => {
 
 
 /* =============================================================
-   14. INVITATION MODAL
+   15. INVITATION MODAL
 ============================================================= */
 
 $('copyInviteBtn')?.addEventListener('click', async () => {
   try {
-    await navigator.clipboard.writeText($('inviteLink').value);
+    await navigator.clipboard.writeText(
+      $('inviteLink').value
+    );
 
     $('copyInviteBtn').textContent = 'Copied';
 
@@ -1269,7 +1450,7 @@ $('doneModal')?.addEventListener('click', closeModal);
 
 
 /* =============================================================
-   15. ASSET MANAGEMENT
+   16. ASSET MANAGEMENT
 ============================================================= */
 
 $('addAssetBtn')?.addEventListener('click', async () => {
@@ -1287,14 +1468,6 @@ $('addAssetBtn')?.addEventListener('click', async () => {
   }
 
   try {
-    /*
-     * Keep this document compatible with the previously supplied
-     * Firestore asset rule allow-list:
-     * ownerUid, name, identifier, createdAt.
-     *
-     * Add extra fields only after updating and deploying the rules.
-     */
-
     await addDoc(collection(db, 'assets'), {
       ownerUid: state.user.uid,
       name,
@@ -1318,7 +1491,7 @@ $('addAssetBtn')?.addEventListener('click', async () => {
 
 
 /* =============================================================
-   16. LOAD AND DISPLAY ASSETS
+   17. LOAD AND DISPLAY ASSETS
 ============================================================= */
 
 function watchAssets(uid) {
@@ -1332,7 +1505,6 @@ function watchAssets(uid) {
 
     snapshot => {
       const list = $('assetList');
-
       if (!list) return;
 
       list.replaceChildren();
@@ -1352,18 +1524,16 @@ function watchAssets(uid) {
         row.className = 'person';
 
         const info = document.createElement('div');
-
         const name = document.createElement('strong');
-        name.textContent = asset.name || 'Unnamed asset';
-
         const identifier = document.createElement('small');
+
+        name.textContent = asset.name || 'Unnamed asset';
         identifier.textContent =
-          `${asset.identifier || 'No identifier'}`;
+          asset.identifier || 'No identifier';
 
         info.append(name, identifier);
 
         const removeButton = document.createElement('button');
-
         removeButton.className = 'danger';
         removeButton.textContent = 'Delete';
 
@@ -1372,7 +1542,6 @@ function watchAssets(uid) {
 
           try {
             await deleteDoc(doc(db, 'assets', document.id));
-
             logActivity('Asset deleted', asset.name);
 
           } catch (error) {
@@ -1395,7 +1564,7 @@ function watchAssets(uid) {
 
 
 /* =============================================================
-   17. EXPORT ASSETS
+   18. EXPORT ASSETS
 ============================================================= */
 
 $('exportBtn')?.addEventListener('click', async () => {
@@ -1445,7 +1614,7 @@ $('exportBtn')?.addEventListener('click', async () => {
 
 
 /* =============================================================
-   18. DELETE ALL ASSETS
+   19. DELETE ALL ASSETS
 ============================================================= */
 
 $('deleteBtn')?.addEventListener('click', async () => {
@@ -1471,7 +1640,10 @@ $('deleteBtn')?.addEventListener('click', async () => {
       )
     );
 
-    logActivity('Assets deleted', 'All registered assets removed.');
+    logActivity(
+      'Assets deleted',
+      'All registered assets removed.'
+    );
 
   } catch (error) {
     console.error('Asset deletion failed:', error);
@@ -1481,7 +1653,7 @@ $('deleteBtn')?.addEventListener('click', async () => {
 
 
 /* =============================================================
-   19. SUBSCRIPTION STATUS
+   20. SUBSCRIPTION STATUS
 ============================================================= */
 
 function watchSubscription(uid) {
@@ -1494,10 +1666,16 @@ function watchSubscription(uid) {
           snapshot.data().paidThrough?.toDate?.().toLocaleString() ||
           'pending update';
 
-        say('trialState', `Active. Paid through ${paidThrough}.`);
+        say(
+          'trialState',
+          `Active. Paid through ${paidThrough}.`
+        );
 
       } else {
-        say('trialState', 'No verified active subscription.');
+        say(
+          'trialState',
+          'No verified active subscription.'
+        );
       }
     },
 
@@ -1511,7 +1689,7 @@ function watchSubscription(uid) {
 
 
 /* =============================================================
-   20. M-PESA CHECKOUT
+   21. M-PESA CHECKOUT
 ============================================================= */
 
 $('payBtn')?.addEventListener('click', async () => {
@@ -1521,7 +1699,10 @@ $('payBtn')?.addEventListener('click', async () => {
   }
 
   if (!$('payConfirm')?.checked) {
-    say('payStatus', 'Confirm the price before starting checkout.');
+    say(
+      'payStatus',
+      'Confirm the price before starting checkout.'
+    );
     return;
   }
 
@@ -1536,7 +1717,6 @@ $('payBtn')?.addEventListener('click', async () => {
   }
 
   const button = $('payBtn');
-
   if (button) button.disabled = true;
 
   say('payStatus', 'Requesting secure M-Pesa STK Push…');
@@ -1552,7 +1732,7 @@ $('payBtn')?.addEventListener('click', async () => {
 
     say(
       'payStatus',
-      `${result.data.message || 'STK Push request accepted by the server.'} Check your phone for the M-Pesa prompt. This is not a website popup. Reference: ${result.data.paymentId}. Access will update only after server verification.`
+      `${result.data.message || 'STK Push request accepted by the server.'} Check your phone for the M-Pesa prompt. Reference: ${result.data.paymentId}. Access will update only after server verification.`
     );
 
     logActivity(
@@ -1561,7 +1741,11 @@ $('payBtn')?.addEventListener('click', async () => {
     );
 
   } catch (error) {
-    reportError('payStatus', error, 'Payment request failed');
+    reportError(
+      'payStatus',
+      error,
+      'Payment request failed'
+    );
 
   } finally {
     if (button) button.disabled = false;
@@ -1570,7 +1754,7 @@ $('payBtn')?.addEventListener('click', async () => {
 
 
 /* =============================================================
-   21. APPLICATION INITIALIZATION
+   22. APPLICATION INITIALIZATION
 ============================================================= */
 
 function startApp() {
@@ -1602,20 +1786,19 @@ function startApp() {
 
   try {
     app = initializeApp(cfg.firebase);
-
     auth = getAuth(app);
 
     /*
-     * IMPORTANT FIRESTORE TRANSPORT CONFIGURATION.
+     * Firebase SDK 10.14.1:
+     * Auto-detect long polling where required.
+     * Disable fetch streams to improve compatibility
+     * with networks that interrupt Firestore streams.
      *
-     * Long polling can help on networks that interrupt
-     * Firestore WebChannel streaming connections.
-     *
-     * This must be initialized once, before Firestore use.
+     * Initialize Firestore only once.
      */
-
     db = initializeFirestore(app, {
-      experimentalForceLongPolling: true
+      experimentalAutoDetectLongPolling: true,
+      useFetchStreams: false
     });
 
     functions = getFunctions(
@@ -1624,11 +1807,11 @@ function startApp() {
     );
 
     updateNetworkStatus(navigator.onLine);
-
     initMap();
 
     onAuthStateChanged(auth, async user => {
       state.user = user;
+      state.authReady = true;
 
       clearSubscriptions();
 
@@ -1653,40 +1836,11 @@ function startApp() {
         );
 
         if (state.shareId) {
-          try {
-            const member = await getDoc(
-              doc(db, 'shares', state.shareId, 'members', user.uid)
-            );
-
-            if (
-              member.exists() &&
-              member.data().active === true
-            ) {
-              watchShare(state.shareId);
-
-            } else {
-              state.shareId = '';
-              sessionStorage.removeItem('ktShareId');
-            }
-
-          } catch (error) {
-            console.error('Session restoration failed:', error);
-
-            /*
-             * Preserve the session ID if the network is
-             * unavailable. Do not silently discard it.
-             */
-
-            say(
-              'mapStatus',
-              'Could not restore your sharing session. Check your connection and reload.'
-            );
-          }
+          await restoreSharingSession(user);
         }
 
       } else {
         $('authOverlay')?.classList.remove('hidden');
-
         $('signOutBtn')?.classList.add('hidden');
 
         if ($('accountBtn')) {
@@ -1716,7 +1870,7 @@ function startApp() {
 
 
 /* =============================================================
-   22. START APPLICATION
+   23. START APPLICATION
 ============================================================= */
 
 startApp();
